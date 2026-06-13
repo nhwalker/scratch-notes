@@ -12,8 +12,10 @@
 # Pass a command (e.g. bash) to skip launching k3s and get a shell with
 # CRI-O already running.
 #
-# Extra k3s server flags can be supplied via K3S_EXTRA_ARGS, e.g.
-#   K3S_EXTRA_ARGS="--disable=traefik --disable=servicelb"
+# Traefik and ServiceLB are disabled by default (see K3S_DISABLE below);
+# set K3S_DISABLE="" to keep them, or to a comma-separated list to choose
+# what to drop. Extra k3s server flags go in K3S_EXTRA_ARGS, e.g.
+#   K3S_EXTRA_ARGS="--disable=metrics-server --node-name=ci"
 set -euo pipefail
 
 # Reuse the base image setup. Sourcing (rather than exec'ing) returns
@@ -50,10 +52,27 @@ fi
 # k3s points its kubelet at CRI-O instead of the embedded containerd.
 # cgroupfs matches the CRI-O cgroup_manager (no systemd in the
 # container); host-gw flannel avoids needing the vxlan kernel module.
+#
+# Traefik and ServiceLB are disabled by default: their ingress /
+# LoadBalancer value is mostly lost behind the container's network
+# boundary, and dropping them avoids those image pulls at startup.
+# Override with K3S_DISABLE (set it empty to keep everything). k3s
+# --disable does not split on commas, so emit one flag per component.
+K3S_DISABLE="${K3S_DISABLE-traefik,servicelb}"
+k3s_disable=()
+if [[ -n "${K3S_DISABLE}" ]]; then
+    IFS=',' read -ra _disable_items <<< "${K3S_DISABLE}"
+    for _item in "${_disable_items[@]}"; do
+        [[ -n "${_item}" ]] && k3s_disable+=(--disable="${_item}")
+    done
+fi
+
 read -ra k3s_extra <<< "${K3S_EXTRA_ARGS:-}"
 exec k3s server \
     --container-runtime-endpoint="unix://${CRIO_SOCKET}" \
     --kubelet-arg=cgroup-driver=cgroupfs \
     --flannel-backend=host-gw \
+    --flannel-cni-conf=/etc/k3s/flannel-cni.conflist \
     --write-kubeconfig-mode=0644 \
+    "${k3s_disable[@]}" \
     "${k3s_extra[@]}"

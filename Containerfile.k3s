@@ -101,6 +101,12 @@ plugin_dirs = [
 ]
 EOF
 
+# Custom flannel CNI conflist that drops the "bandwidth" meta-plugin.
+# CRI-O runs a CNI CHECK after ADD (k3s's bundled containerd does not),
+# and k3s's bandwidth plugin segfaults on CHECK, which would otherwise
+# fail every pod sandbox. flannel + portmap is all this setup needs.
+COPY flannel-cni.conflist /etc/k3s/flannel-cni.conflist
+
 COPY entrypoint-k3s.sh /usr/local/bin/entrypoint-k3s.sh
 RUN chmod 0755 /usr/local/bin/entrypoint-k3s.sh
 

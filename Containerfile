@@ -106,6 +106,12 @@ ENV JAVA_HOME=/usr/lib/jvm/java-21-openjdk \
     GRADLE_HOME=/opt/gradle \
     ALLURE_HOME=/opt/allure \
     _CONTAINERS_USERNS_CONFIGURED="" \
+    # When the outer runtime injects GPUs via the legacy --gpus path,
+    # expose all GPUs and mount every driver capability (the default is
+    # compute+utility only, which lacks video/graphics libs). Inert on
+    # non-GPU hosts.
+    NVIDIA_VISIBLE_DEVICES=all \
+    NVIDIA_DRIVER_CAPABILITIES=all \
     # BUILDAH_ISOLATION sets how buildah/podman-build runs RUN steps:
     #   oci      - full OCI container per step via crun (the default);
     #              needs nesting privileges this image often won't have

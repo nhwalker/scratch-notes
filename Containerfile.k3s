@@ -3,7 +3,7 @@
 #
 # Inherits everything from the base image (JDK 21/25, Gradle, Allure,
 # Helm, podman, NVIDIA toolkit) and adds:
-#   - CRI-O + crictl (from the Kubernetes package repos)
+#   - CRI-O + crictl (RPMs, from CRI-O's OpenSUSE OBS repository)
 #   - k3s (single binary, run with CRI-O as the CRI backend)
 #
 # The entrypoint runs the base image's setup, then starts CRI-O and a
@@ -19,31 +19,33 @@
 # Run (needs privileges and cgroup v2 for the kubelet/CRI-O):
 #   podman run --rm -it --privileged k3s-crio
 #
-# VERSION SKEW: k3s defaults to the latest stable (Kubernetes 1.35),
-# but the newest CRI-O published to pkgs.k8s.io is 1.32. They are more
-# than the recommended one-minor skew apart. For a strictly matched
-# pair, pin K3S_VERSION down to the CRIO_VERSION minor, e.g.
-#   --build-arg K3S_VERSION=v1.32.7+k3s1 --build-arg CRIO_VERSION=v1.32
-# and bump CRIO_VERSION once newer CRI-O packages are available.
+# VERSIONS: k3s defaults to the latest stable (Kubernetes 1.35) and
+# CRI-O to the matching v1.35 minor. Keep the two minors aligned when
+# bumping either:
+#   --build-arg K3S_VERSION=v1.34.6+k3s1 --build-arg CRIO_VERSION=v1.34
 
 ARG PODMAN_IMAGE=java-gradle-ci:latest
 FROM ${PODMAN_IMAGE}
 
 ARG K3S_VERSION=v1.35.5+k3s1
-ARG CRIO_VERSION=v1.32
+# CRI-O minor (matches the k3s/Kubernetes minor). Used for both the CRI-O
+# and cri-tools repositories.
+ARG CRIO_VERSION=v1.35
 # Set automatically by buildx/buildah; defaulted for builders that don't.
 ARG TARGETARCH=amd64
 
-# CRI-O and crictl from the Kubernetes package repos, plus iptables and
-# the reference CNI plugins that CRI-O/k3s flannel rely on. conmon,
-# crun, and containers-common already come from the base image's podman.
+# CRI-O and crictl via RPM, following the cri-o/packaging guide:
+#   - CRI-O from its own OpenSUSE OBS repository. (Upstream moved here
+#     from pkgs.k8s.io/addons:cri-o, which is now frozen at v1.32.)
+#   - crictl (cri-tools) from the Kubernetes core repo.
+#   - container-selinux and iptables, dependencies from the UBI repos.
 RUN printf '%s\n' \
         '[cri-o]' \
         'name=CRI-O' \
-        "baseurl=https://pkgs.k8s.io/addons:/cri-o:/stable:/${CRIO_VERSION}/rpm/" \
+        "baseurl=https://download.opensuse.org/repositories/isv:/cri-o:/stable:/${CRIO_VERSION}/rpm/" \
         'enabled=1' \
         'gpgcheck=1' \
-        "gpgkey=https://pkgs.k8s.io/addons:/cri-o:/stable:/${CRIO_VERSION}/rpm/repodata/repomd.xml.key" \
+        "gpgkey=https://download.opensuse.org/repositories/isv:/cri-o:/stable:/${CRIO_VERSION}/rpm/repodata/repomd.xml.key" \
         > /etc/yum.repos.d/cri-o.repo \
     && printf '%s\n' \
         '[kubernetes]' \
@@ -53,7 +55,7 @@ RUN printf '%s\n' \
         'gpgcheck=1' \
         "gpgkey=https://pkgs.k8s.io/core:/stable:/${CRIO_VERSION}/rpm/repodata/repomd.xml.key" \
         > /etc/yum.repos.d/kubernetes.repo \
-    && microdnf -y install cri-o cri-tools iptables containernetworking-plugins \
+    && microdnf -y install container-selinux iptables cri-o cri-tools \
     && microdnf clean all
 
 # k3s binary, verified against the release's published checksum file.
@@ -71,14 +73,14 @@ RUN set -eu; \
     chmod 0755 /usr/local/bin/k3s; \
     rm -f /tmp/k3s.sha256
 
-# CRI-O configuration for running inside a container:
+# CRI-O overrides for running inside a container, layered on top of the
+# package's own /etc/crio/crio.conf.d/10-crio.conf (which already sets
+# crun as the default runtime). This adds:
 #   - dedicated storage root (separate from podman's /var/lib/containers)
 #     using fuse-overlayfs, for overlay-on-overlay
 #   - cgroupfs manager, since there is no systemd in the container
-#   - crun as the default runtime
 #   - CNI config/binaries pointed at the locations k3s manages for flannel
-RUN mkdir -p /etc/crio/crio.conf.d
-COPY <<'EOF' /etc/crio/crio.conf.d/10-k3s.conf
+COPY <<'EOF' /etc/crio/crio.conf.d/20-k3s.conf
 [crio]
 root = "/var/lib/crio"
 runroot = "/run/crio"
@@ -90,17 +92,11 @@ storage_option = [
 [crio.runtime]
 cgroup_manager = "cgroupfs"
 conmon_cgroup = "pod"
-default_runtime = "crun"
-
-[crio.runtime.runtimes.crun]
-runtime_path = "/usr/bin/crun"
-runtime_type = "oci"
 
 [crio.network]
 network_dir = "/var/lib/rancher/k3s/agent/etc/cni/net.d"
 plugin_dirs = [
     "/var/lib/rancher/k3s/data/current/bin",
-    "/usr/libexec/cni",
     "/opt/cni/bin",
 ]
 EOF

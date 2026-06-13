@@ -4,7 +4,7 @@
 #   - OpenJDK 21 and 25 (devel RPMs, so javac is available for both)
 #   - Gradle 9.2.1
 #   - Allure 2 commandline (test reporting)
-#   - Helm (chart linting)
+#   - Helm 3 (chart linting)
 #   - Podman, for docker-in-docker style image builds and Testcontainers runs
 #
 # Build:
@@ -67,16 +67,19 @@ RUN curl -fsSL -o /tmp/allure.tgz "https://repo.maven.apache.org/maven2/io/qamet
     && ln -s "/opt/allure-${ALLURE_VERSION}" /opt/allure \
     && rm -f /tmp/allure.tgz
 
-# Helm (chart linting) from the EPEL 9 RPM, GPG-verified against the
-# EPEL signing key. EPEL also packages "helm3" if the Helm 3 line is
-# needed instead. microdnf can't install RPMs by URL, so the
-# epel-release package is fetched and installed with rpm directly.
+# Helm 3 (chart linting) from the EPEL 9 "helm3" RPM, GPG-verified
+# against the EPEL signing key (EPEL's "helm" package is the Helm 4
+# line). The RPM installs the binary as helm3, so a helm symlink is
+# added for scripts that expect the usual name. microdnf can't install
+# RPMs by URL, so epel-release is fetched and installed with rpm
+# directly.
 RUN curl -fsSL -o /tmp/epel-release.rpm \
         "https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm" \
     && rpm -Uvh /tmp/epel-release.rpm \
     && rm -f /tmp/epel-release.rpm \
-    && microdnf -y install helm \
-    && microdnf clean all
+    && microdnf -y install helm3 \
+    && microdnf clean all \
+    && ln -s /usr/bin/helm3 /usr/local/bin/helm
 
 # Nested-podman setup, mirroring the upstream podman-in-podman image:
 # subordinate ID ranges for a dedicated rootless "podman" user, and

@@ -122,6 +122,12 @@ ENV JAVA_HOME=/usr/lib/jvm/java-21-openjdk \
     GRADLE_HOME=/opt/gradle \
     ALLURE_HOME=/opt/allure \
     _CONTAINERS_USERNS_CONFIGURED="" \
+    # BUILDAH_ISOLATION sets how buildah/podman-build runs RUN steps:
+    #   oci      - full OCI container per step via crun (the default);
+    #              needs nesting privileges this image often won't have
+    #   chroot   - plain chroot with bind-mounted /proc and /dev; works
+    #              reliably when building inside a container
+    #   rootless - like oci but forces rootless settings
     BUILDAH_ISOLATION=chroot
 ENV PATH="${JAVA_HOME}/bin:${GRADLE_HOME}/bin:${ALLURE_HOME}/bin:${PATH}"
 

@@ -88,9 +88,9 @@ RUN curl -fsSL -o /tmp/epel-release.rpm \
 RUN useradd -m podman \
     && printf 'podman:1:999\npodman:1001:64535\n' > /etc/subuid \
     && printf 'podman:1:999\npodman:1001:64535\n' > /etc/subgid \
-    && sed -e 's|^#mount_program|mount_program|g' \
+    && sed -i -e 's|^#mount_program|mount_program|g' \
            -e 's|^mountopt[[:space:]]*=.*$|mountopt = "nodev,fsync=0"|g' \
-           /usr/share/containers/storage.conf > /etc/containers/storage.conf \
+           /etc/containers/storage.conf \
     && mkdir -p /home/podman/.config/containers /home/podman/.local/share/containers \
     && chown -R podman:podman /home/podman
 

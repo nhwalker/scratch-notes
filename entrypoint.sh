@@ -12,6 +12,7 @@ set -euo pipefail
 PODMAN_SOCKET=/run/podman/podman.sock
 
 if [[ -n "${START_PODMAN:-}" ]]; then
+    mkdir -p "$(dirname "${PODMAN_SOCKET}")"
     podman system service --time=0 "unix://${PODMAN_SOCKET}" &
     export DOCKER_HOST="unix://${PODMAN_SOCKET}"
     for _ in $(seq 1 50); do

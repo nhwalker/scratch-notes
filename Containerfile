@@ -13,9 +13,11 @@
 # privileged run:
 #   podman run --rm -it --privileged java-gradle-ci
 #
-# For Testcontainers, start the Docker-compatible API socket inside the
-# container first (DOCKER_HOST below already points at it):
-#   podman system service --time=0 unix:///run/podman/podman.sock &
+# Set START_PODMAN=1 to have the entrypoint fork the Docker-compatible
+# podman API service and export DOCKER_HOST at its socket (used by
+# Testcontainers). When a GPU is visible via nvidia-smi, the entrypoint
+# also generates the NVIDIA CDI spec so nested containers can use
+# --device nvidia.com/gpu=all.
 
 FROM registry.access.redhat.com/ubi9/ubi-minimal:latest
 
@@ -43,10 +45,8 @@ RUN microdnf -y install \
     && microdnf clean all
 
 # NVIDIA Container Toolkit, from NVIDIA's official RPM repo, so nested
-# podman runs can expose host GPUs. At runtime (with the host's GPUs
-# mapped into this container), generate the CDI spec once:
-#   nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml
-# then pass GPUs to nested containers with:
+# podman runs can expose host GPUs. The entrypoint generates the CDI
+# spec when a GPU is present; nested containers then use:
 #   podman run --device nvidia.com/gpu=all ...
 RUN curl -fsSL -o /etc/yum.repos.d/nvidia-container-toolkit.repo \
         "https://nvidia.github.io/libnvidia-container/stable/rpm/nvidia-container-toolkit.repo" \
@@ -108,8 +108,7 @@ ENV JAVA_HOME=/usr/lib/jvm/java-21-openjdk \
     GRADLE_HOME=/opt/gradle \
     ALLURE_HOME=/opt/allure \
     _CONTAINERS_USERNS_CONFIGURED="" \
-    BUILDAH_ISOLATION=chroot \
-    DOCKER_HOST=unix:///run/podman/podman.sock
+    BUILDAH_ISOLATION=chroot
 ENV PATH="${JAVA_HOME}/bin:${GRADLE_HOME}/bin:${ALLURE_HOME}/bin:${PATH}"
 
 # Container storage lives on volumes so nested image pulls/builds don't
@@ -126,6 +125,10 @@ RUN java -version \
     && nvidia-ctk --version \
     && rm -rf /root/.gradle
 
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod 0755 /usr/local/bin/entrypoint.sh
+
 WORKDIR /workspace
 
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["/bin/bash"]

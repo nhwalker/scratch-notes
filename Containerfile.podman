@@ -8,7 +8,7 @@
 #   - Podman, for docker-in-docker style image builds and Testcontainers runs
 #
 # Build:
-#   podman build -t java-gradle-ci -f Containerfile .
+#   podman build -t java-gradle-ci -f Containerfile.podman .
 #
 # Nested containers (DinD-style builds / Testcontainers) require a
 # privileged run:
@@ -135,10 +135,10 @@ RUN java -version \
     && helm version \
     && rm -rf /root/.gradle
 
-COPY entrypoint.sh /usr/local/bin/entrypoint.sh
-RUN chmod 0755 /usr/local/bin/entrypoint.sh
+COPY entrypoint-podman.sh /usr/local/bin/entrypoint-podman.sh
+RUN chmod 0755 /usr/local/bin/entrypoint-podman.sh
 
 WORKDIR /workspace
 
-ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+ENTRYPOINT ["/usr/local/bin/entrypoint-podman.sh"]
 CMD ["/bin/bash"]

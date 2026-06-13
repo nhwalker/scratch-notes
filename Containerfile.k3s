@@ -1,0 +1,128 @@
+# Single-node k3s using CRI-O as the container runtime, layered on the
+# Java/Gradle + podman base image (Containerfile.podman).
+#
+# Inherits everything from the base image (JDK 21/25, Gradle, Allure,
+# Helm, podman, NVIDIA toolkit) and adds:
+#   - CRI-O + crictl (from the Kubernetes package repos)
+#   - k3s (single binary, run with CRI-O as the CRI backend)
+#
+# The entrypoint runs the base image's setup, then starts CRI-O and a
+# single-node k3s server wired to it. GPUs reach pods via CDI: the base
+# entrypoint writes /etc/cdi/nvidia.yaml when a GPU is present, and
+# CRI-O reads /etc/cdi by default.
+#
+# Build (the base image must exist locally, or pass --build-arg
+# PODMAN_IMAGE=<ref>):
+#   podman build -t java-gradle-ci -f Containerfile.podman .
+#   podman build -t k3s-crio -f Containerfile.k3s .
+#
+# Run (needs privileges and cgroup v2 for the kubelet/CRI-O):
+#   podman run --rm -it --privileged k3s-crio
+#
+# VERSION SKEW: k3s defaults to the latest stable (Kubernetes 1.35),
+# but the newest CRI-O published to pkgs.k8s.io is 1.32. They are more
+# than the recommended one-minor skew apart. For a strictly matched
+# pair, pin K3S_VERSION down to the CRIO_VERSION minor, e.g.
+#   --build-arg K3S_VERSION=v1.32.7+k3s1 --build-arg CRIO_VERSION=v1.32
+# and bump CRIO_VERSION once newer CRI-O packages are available.
+
+ARG PODMAN_IMAGE=java-gradle-ci:latest
+FROM ${PODMAN_IMAGE}
+
+ARG K3S_VERSION=v1.35.5+k3s1
+ARG CRIO_VERSION=v1.32
+# Set automatically by buildx/buildah; defaulted for builders that don't.
+ARG TARGETARCH=amd64
+
+# CRI-O and crictl from the Kubernetes package repos, plus iptables and
+# the reference CNI plugins that CRI-O/k3s flannel rely on. conmon,
+# crun, and containers-common already come from the base image's podman.
+RUN printf '%s\n' \
+        '[cri-o]' \
+        'name=CRI-O' \
+        "baseurl=https://pkgs.k8s.io/addons:/cri-o:/stable:/${CRIO_VERSION}/rpm/" \
+        'enabled=1' \
+        'gpgcheck=1' \
+        "gpgkey=https://pkgs.k8s.io/addons:/cri-o:/stable:/${CRIO_VERSION}/rpm/repodata/repomd.xml.key" \
+        > /etc/yum.repos.d/cri-o.repo \
+    && printf '%s\n' \
+        '[kubernetes]' \
+        'name=Kubernetes' \
+        "baseurl=https://pkgs.k8s.io/core:/stable:/${CRIO_VERSION}/rpm/" \
+        'enabled=1' \
+        'gpgcheck=1' \
+        "gpgkey=https://pkgs.k8s.io/core:/stable:/${CRIO_VERSION}/rpm/repodata/repomd.xml.key" \
+        > /etc/yum.repos.d/kubernetes.repo \
+    && microdnf -y install cri-o cri-tools iptables containernetworking-plugins \
+    && microdnf clean all
+
+# k3s binary, verified against the release's published checksum file.
+RUN set -eu; \
+    case "${TARGETARCH}" in \
+        amd64) suffix= ;; \
+        arm64) suffix=-arm64 ;; \
+        *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    base="https://github.com/k3s-io/k3s/releases/download/${K3S_VERSION}"; \
+    curl -fsSL -o /usr/local/bin/k3s "${base}/k3s${suffix}"; \
+    curl -fsSL -o /tmp/k3s.sha256 "${base}/sha256sum-${TARGETARCH}.txt"; \
+    sum="$(grep -E "[[:space:]]k3s${suffix}\$" /tmp/k3s.sha256 | awk '{print $1}')"; \
+    echo "${sum}  /usr/local/bin/k3s" | sha256sum -c -; \
+    chmod 0755 /usr/local/bin/k3s; \
+    rm -f /tmp/k3s.sha256
+
+# CRI-O configuration for running inside a container:
+#   - dedicated storage root (separate from podman's /var/lib/containers)
+#     using fuse-overlayfs, for overlay-on-overlay
+#   - cgroupfs manager, since there is no systemd in the container
+#   - crun as the default runtime
+#   - CNI config/binaries pointed at the locations k3s manages for flannel
+RUN mkdir -p /etc/crio/crio.conf.d
+COPY <<'EOF' /etc/crio/crio.conf.d/10-k3s.conf
+[crio]
+root = "/var/lib/crio"
+runroot = "/run/crio"
+storage_driver = "overlay"
+storage_option = [
+    "overlay.mount_program=/usr/bin/fuse-overlayfs",
+]
+
+[crio.runtime]
+cgroup_manager = "cgroupfs"
+conmon_cgroup = "pod"
+default_runtime = "crun"
+
+[crio.runtime.runtimes.crun]
+runtime_path = "/usr/bin/crun"
+runtime_type = "oci"
+
+[crio.network]
+network_dir = "/var/lib/rancher/k3s/agent/etc/cni/net.d"
+plugin_dirs = [
+    "/var/lib/rancher/k3s/data/current/bin",
+    "/usr/libexec/cni",
+    "/opt/cni/bin",
+]
+EOF
+
+COPY entrypoint-k3s.sh /usr/local/bin/entrypoint-k3s.sh
+RUN chmod 0755 /usr/local/bin/entrypoint-k3s.sh
+
+# Build-time sanity check that the runtimes resolve and run.
+RUN k3s --version \
+    && crio --version \
+    && crictl --version
+
+# k3s state and CRI-O image storage on volumes so they don't write
+# through the image's overlay layer.
+VOLUME /var/lib/rancher
+VOLUME /var/lib/crio
+
+EXPOSE 6443
+
+WORKDIR /workspace
+
+ENTRYPOINT ["/usr/local/bin/entrypoint-k3s.sh"]
+# Clear the base image's CMD so no command is passed: the entrypoint
+# then launches k3s by default.
+CMD []

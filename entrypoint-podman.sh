@@ -7,6 +7,10 @@
 #
 # If nvidia-smi reports a GPU, generate the NVIDIA CDI spec so nested
 # containers can target GPUs with --device nvidia.com/gpu=...
+#
+# This script is also sourced by derived images (e.g. the k3s image) to
+# reuse the podman/GPU setup: the final exec only runs when the script
+# is executed directly, so a sourcing caller keeps control afterwards.
 set -euo pipefail
 
 PODMAN_SOCKET=/run/podman/podman.sock
@@ -30,4 +34,8 @@ if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L 2>/dev/null | grep -q 
         || echo "entrypoint: nvidia-ctk cdi generate failed; GPU CDI devices unavailable" >&2
 fi
 
-exec "$@"
+# Only hand off to the container command when run as the entrypoint
+# itself; when sourced, return so the caller can continue.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    exec "$@"
+fi

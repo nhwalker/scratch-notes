@@ -4,6 +4,7 @@
 #   - OpenJDK 21 and 25 (devel RPMs, so javac is available for both)
 #   - Gradle 9.2.1
 #   - Allure 2 commandline (test reporting)
+#   - Helm (chart linting)
 #   - Podman, for docker-in-docker style image builds and Testcontainers runs
 #
 # Build:
@@ -25,6 +26,11 @@ ARG GRADLE_VERSION=9.2.1
 ARG GRADLE_SHA256=72f44c9f8ebcb1af43838f45ee5c4aa9c5444898b3468ab3f4af7b6076c5bc3f
 ARG ALLURE_VERSION=2.42.1
 ARG ALLURE_SHA256=f8f73bf4bbd2cf5b8eee51d27487aef55c9d2f2650db111a52fa8108866ba86c
+ARG HELM_VERSION=4.2.1
+ARG HELM_SHA256_AMD64=479dca836e5b45e8bd222400c5591b0e3a647378f03ff96597180db97c17fdae
+ARG HELM_SHA256_ARM64=596b9a73d366c1e72ce67d595c22805480e30914593aafbc9f547694e72814db
+# Set automatically by buildx/buildah; defaulted for builders that don't.
+ARG TARGETARCH=amd64
 
 # OpenJDK 21 + 25, Podman plus rootless plumbing (fuse-overlayfs,
 # shadow-utils for newuidmap/newgidmap), and the archive/VCS tools that
@@ -66,6 +72,19 @@ RUN curl -fsSL -o /tmp/allure.tgz "https://repo.maven.apache.org/maven2/io/qamet
     && tar -xzf /tmp/allure.tgz -C /opt \
     && ln -s "/opt/allure-${ALLURE_VERSION}" /opt/allure \
     && rm -f /tmp/allure.tgz
+
+# Helm (chart linting), verified against the published checksum for the
+# build architecture.
+RUN case "${TARGETARCH}" in \
+        amd64) HELM_SHA256="${HELM_SHA256_AMD64}" ;; \
+        arm64) HELM_SHA256="${HELM_SHA256_ARM64}" ;; \
+        *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac \
+    && curl -fsSL -o /tmp/helm.tgz "https://get.helm.sh/helm-v${HELM_VERSION}-linux-${TARGETARCH}.tar.gz" \
+    && echo "${HELM_SHA256}  /tmp/helm.tgz" | sha256sum -c - \
+    && tar -xzf /tmp/helm.tgz -C /tmp \
+    && install -m 0755 "/tmp/linux-${TARGETARCH}/helm" /usr/local/bin/helm \
+    && rm -rf /tmp/helm.tgz "/tmp/linux-${TARGETARCH}"
 
 # Nested-podman setup, mirroring the upstream podman-in-podman image:
 # subordinate ID ranges for a dedicated rootless "podman" user, and
@@ -123,6 +142,7 @@ RUN java -version \
     && allure --version \
     && podman --version \
     && nvidia-ctk --version \
+    && helm version \
     && rm -rf /root/.gradle
 
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh

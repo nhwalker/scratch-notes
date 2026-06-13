@@ -34,7 +34,6 @@ RUN microdnf -y install \
         java-25-openjdk-devel \
         podman \
         fuse-overlayfs \
-        shadow-utils \
         git-core \
         tar \
         gzip \
@@ -81,18 +80,12 @@ RUN curl -fsSL -o /tmp/epel-release.rpm \
     && microdnf clean all \
     && ln -s /usr/bin/helm3 /usr/local/bin/helm
 
-# Nested-podman setup, mirroring the upstream podman-in-podman image:
-# subordinate ID ranges for a dedicated rootless "podman" user, and
-# fuse-overlayfs as the storage mount program so overlay works when
-# /var/lib/containers itself sits on an overlay filesystem.
-RUN useradd -m podman \
-    && printf 'podman:1:999\npodman:1001:64535\n' > /etc/subuid \
-    && printf 'podman:1:999\npodman:1001:64535\n' > /etc/subgid \
-    && sed -i -e 's|^#mount_program|mount_program|g' \
-           -e 's|^mountopt[[:space:]]*=.*$|mountopt = "nodev,fsync=0"|g' \
-           /etc/containers/storage.conf \
-    && mkdir -p /home/podman/.config/containers /home/podman/.local/share/containers \
-    && chown -R podman:podman /home/podman
+# Nested-podman storage setup (root-only): fuse-overlayfs as the
+# storage mount program so overlay works when /var/lib/containers
+# itself sits on an overlay filesystem.
+RUN sed -i -e 's|^#mount_program|mount_program|g' \
+        -e 's|^mountopt[[:space:]]*=.*$|mountopt = "nodev,fsync=0"|g' \
+        /etc/containers/storage.conf
 
 COPY <<'EOF' /etc/containers/containers.conf
 [containers]
@@ -102,15 +95,6 @@ log_driver = "k8s-file"
 cgroup_manager = "cgroupfs"
 events_logger = "file"
 runtime = "crun"
-EOF
-
-COPY --chown=podman:podman <<'EOF' /home/podman/.config/containers/containers.conf
-[containers]
-volumes = ["/proc:/proc"]
-
-[engine]
-cgroup_manager = "cgroupfs"
-events_logger = "file"
 EOF
 
 # Java 21 (LTS) is the default JVM for running Gradle; Java 25 is
@@ -131,10 +115,9 @@ ENV JAVA_HOME=/usr/lib/jvm/java-21-openjdk \
     BUILDAH_ISOLATION=chroot
 ENV PATH="${JAVA_HOME}/bin:${GRADLE_HOME}/bin:${ALLURE_HOME}/bin:${PATH}"
 
-# Container storage lives on volumes so nested image pulls/builds don't
-# write through the image's own overlay layer.
+# Container storage lives on a volume so nested image pulls/builds
+# don't write through the image's own overlay layer.
 VOLUME /var/lib/containers
-VOLUME /home/podman/.local/share/containers
 
 # Build-time sanity check that every tool resolves and runs.
 RUN java -version \

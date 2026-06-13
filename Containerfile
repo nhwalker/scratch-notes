@@ -42,6 +42,17 @@ RUN microdnf -y install \
         findutils \
     && microdnf clean all
 
+# NVIDIA Container Toolkit, from NVIDIA's official RPM repo, so nested
+# podman runs can expose host GPUs. At runtime (with the host's GPUs
+# mapped into this container), generate the CDI spec once:
+#   nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml
+# then pass GPUs to nested containers with:
+#   podman run --device nvidia.com/gpu=all ...
+RUN curl -fsSL -o /etc/yum.repos.d/nvidia-container-toolkit.repo \
+        "https://nvidia.github.io/libnvidia-container/stable/rpm/nvidia-container-toolkit.repo" \
+    && microdnf -y install nvidia-container-toolkit \
+    && microdnf clean all
+
 # Gradle, verified against the published distribution checksum.
 RUN curl -fsSL -o /tmp/gradle.zip "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip" \
     && echo "${GRADLE_SHA256}  /tmp/gradle.zip" | sha256sum -c - \
@@ -112,6 +123,7 @@ RUN java -version \
     && gradle --version \
     && allure --version \
     && podman --version \
+    && nvidia-ctk --version \
     && rm -rf /root/.gradle
 
 WORKDIR /workspace

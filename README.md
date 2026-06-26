@@ -9,8 +9,11 @@ A small Gradle plugin (Java) that standardizes code formatting. Applying it:
 - applies the [Spotless](https://github.com/diffplug/spotless) plugin (8.7.0) and
   configures a Java format that:
   - uses the **Palantir Java formatter** (modern, lambda-friendly, 120 columns),
-  - prepends a license header (currently **placeholder** text — replace it in
-    `MyFormatterPlugin.LICENSE_HEADER`),
+  - adds a **placeholder** license header (first line `Category: FIXME`; replace
+    the text in `MyFormatterPlugin.LICENSE_HEADER`) **only to files that don't
+    already have a header** — detection is generous (any leading `/* */` or `//`
+    comment counts), so once you fill in the FIXME or change the company name the
+    header is left untouched,
   - removes unused imports, formats annotations, trims trailing whitespace, ends
     files with a newline, and honors `// spotless:off` / `// spotless:on` fences;
 - if the `eclipse` plugin is also applied, merges settings into

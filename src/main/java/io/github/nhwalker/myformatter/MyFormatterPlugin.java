@@ -1,8 +1,10 @@
 package io.github.nhwalker.myformatter;
 
 import com.diffplug.gradle.spotless.SpotlessExtension;
+import java.time.Year;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.regex.Pattern;
 import org.gradle.api.Plugin;
 import org.gradle.api.Project;
 import org.gradle.plugins.ide.eclipse.model.EclipseModel;
@@ -26,18 +28,30 @@ public class MyFormatterPlugin implements Plugin<Project> {
     private static final String SPOTLESS_PLUGIN_ID = "com.diffplug.spotless";
 
     /**
-     * Placeholder license header. Spotless substitutes {@code $YEAR} with the
-     * current year. Replace this text with your project's real header.
+     * Placeholder license header, added only to files that have no header yet.
+     * The {@code $YEAR} token is replaced with the current year when the header
+     * is inserted. Replace this text with your project's real header.
      */
     private static final String LICENSE_HEADER =
             """
             /*
+             * Category: FIXME
+             *
              * Copyright (C) $YEAR PLACEHOLDER ORGANIZATION. All rights reserved.
              *
              * PLACEHOLDER LICENSE HEADER -- replace this text with the real
              * license header for your project before publishing.
              */
             """;
+
+    /**
+     * Matches a file that already starts with <em>some</em> header: any leading
+     * whitespace followed by the start of a block ({@code /*}) or line
+     * ({@code //}) comment. Intentionally generous &mdash; once a developer fills
+     * in {@code Category: FIXME} or changes the company name, the file still has
+     * a header here, so we leave it untouched rather than reverting it.
+     */
+    private static final Pattern EXISTING_HEADER = Pattern.compile("\\s*(/\\*|//)");
 
     @Override
     public void apply(Project project) {
@@ -75,10 +89,31 @@ public class MyFormatterPlugin implements Plugin<Project> {
             java.trimTrailingWhitespace();
             java.endWithNewline();
 
-            // Apply the license header last so it sits above the (now sorted)
-            // package/import block.
-            java.licenseHeader(LICENSE_HEADER);
+            // Add the placeholder header last so it sits above the (now sorted)
+            // package/import block -- but only on files that are missing a
+            // header. Using a custom step (instead of licenseHeader, which would
+            // normalize every file back to the canonical text) is what lets a
+            // filled-in FIXME or a changed company name survive. The bump call
+            // tells Spotless this custom step's behaviour is versioned.
+            java.bumpThisNumberIfACustomStepChanges(1);
+            java.custom("addHeaderIfMissing", MyFormatterPlugin::addHeaderIfMissing);
         });
+    }
+
+    /**
+     * Spotless step that prepends {@link #LICENSE_HEADER} (with {@code $YEAR}
+     * resolved) only when the file does not already start with a header. Files
+     * that already have any leading comment are returned unchanged, which is what
+     * makes the step idempotent and preserves edited headers.
+     */
+    private static String addHeaderIfMissing(String content) {
+        if (EXISTING_HEADER.matcher(content).lookingAt()) {
+            return content;
+        }
+        String header = LICENSE_HEADER.replace("$YEAR", String.valueOf(Year.now().getValue()));
+        // LICENSE_HEADER already ends with a newline; the extra one leaves a
+        // blank line between the header and the package declaration.
+        return header + "\n" + content;
     }
 
     /**

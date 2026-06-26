@@ -67,6 +67,30 @@ public class MyStylePlugin implements Plugin<Project> {
     private static final String JSPECIFY = "org.jspecify:jspecify:1.0.0";
 
     /**
+     * High-confidence Error Prone checks that are off by default but worth failing the
+     * build on. These catch real correctness bugs (no overlap with Spotless/Checkstyle).
+     */
+    private static final String[] EXTRA_ERROR_CHECKS = {
+        "TimeUnitMismatch", // a value in one time unit used where another is expected
+        "EqualsBrokenForNull", // equals() that NPEs when passed null
+        "FunctionalInterfaceClash", // overloads that are ambiguous for lambda arguments
+    };
+
+    /**
+     * Advisory Error Prone checks (off by default) enabled as warnings. Several suggest
+     * adding {@code @Nullable}, which complements NullAway's analysis.
+     */
+    private static final String[] EXTRA_WARN_CHECKS = {
+        "ReturnMissingNullable", // returns a nullable value without @Nullable
+        "FieldMissingNullable", // field holds a nullable value without @Nullable
+        "ParameterMissingNullable", // parameter handles null without @Nullable
+        "EqualsMissingNullable", // equals() parameter missing @Nullable
+        "EqualsGetClass", // prefer instanceof over getClass() in equals()
+        "InconsistentOverloads", // keep overloaded parameter ordering consistent
+        "CheckedExceptionNotThrown", // declared checked exception is never thrown
+    };
+
+    /**
      * Placeholder license header, added only to files that have no header yet.
      * The {@code $YEAR} token is replaced with the current year when the header
      * is inserted. Replace this text with your project's real header.
@@ -226,6 +250,13 @@ public class MyStylePlugin implements Plugin<Project> {
                     ep.option("NullAway:JSpecifyMode", "true");
                     ep.option("NullAway:HandleTestAssertionLibraries", "true");
                 }
+
+                // Turn on a curated set of high-value Error Prone checks that ship
+                // disabled by default. High-confidence correctness bugs fail the
+                // build; the more advisory checks (including ones that suggest
+                // @Nullable to complement NullAway) are warnings.
+                ep.error(EXTRA_ERROR_CHECKS);
+                ep.warn(EXTRA_WARN_CHECKS);
             });
         });
     }

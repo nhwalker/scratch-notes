@@ -35,7 +35,12 @@ A small Gradle plugin (Java) that standardizes code formatting. Applying it:
   your `compileClasspath`/`runtimeClasspath` and never leak to downstream consumers; the
   only compile-classpath addition is the small JSpecify annotations jar (compile-only,
   not at runtime). Projects whose package root differs from what's scanned can override
-  `options.errorprone.option("NullAway:AnnotatedPackages", ...)` in their own build;
+  `options.errorprone.option("NullAway:AnnotatedPackages", ...)` in their own build.
+  On top of Error Prone's defaults, a curated set of normally-disabled checks is turned
+  on: high-confidence correctness bugs as **errors** (`TimeUnitMismatch`,
+  `EqualsBrokenForNull`, `FunctionalInterfaceClash`) and advisory checks as **warnings**
+  (the `*MissingNullable` family that pairs with NullAway, `EqualsGetClass`,
+  `InconsistentOverloads`, `CheckedExceptionNotThrown`);
 - if the `eclipse` plugin is also applied, merges settings into
   `.settings/org.eclipse.jdt.core.prefs` to:
   - turn up the built-in Eclipse JDT compiler warnings (unused code, null

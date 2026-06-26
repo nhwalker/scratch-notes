@@ -235,11 +235,18 @@ public class MyStylePlugin implements Plugin<Project> {
                                 + "NullAway is disabled for {}.", project.getPath());
             }
 
+            // Exclude generated code (anything under build/) from every Error Prone
+            // check. excludedPaths gates at the Error Prone level, so it covers
+            // NullAway and our error-level checks too -- which disableWarningsInGenerated
+            // Code (warnings only) does not.
+            String generatedPathRegex = buildDirExclusionRegex(project);
+
             project.getTasks().withType(JavaCompile.class).configureEach(task -> {
                 ErrorProneOptions ep = ((ExtensionAware) task.getOptions())
                         .getExtensions()
                         .getByType(ErrorProneOptions.class);
                 ep.getDisableWarningsInGeneratedCode().set(true);
+                ep.getExcludedPaths().set(generatedPathRegex);
                 if (annotatedPackages.isEmpty()) {
                     // Nothing to anchor NullAway to; leave the rest of Error Prone on.
                     ep.check("NullAway", CheckSeverity.OFF);
@@ -249,6 +256,8 @@ public class MyStylePlugin implements Plugin<Project> {
                     ep.option("NullAway:AnnotatedPackages", annotatedPackages);
                     ep.option("NullAway:JSpecifyMode", "true");
                     ep.option("NullAway:HandleTestAssertionLibraries", "true");
+                    // Skip classes a processor marked @Generated (Immutables, protobuf, ...).
+                    ep.option("NullAway:TreatGeneratedAsUnannotated", "true");
                 }
 
                 // Turn on a curated set of high-value Error Prone checks that ship
@@ -262,6 +271,17 @@ public class MyStylePlugin implements Plugin<Project> {
     }
 
     /**
+     * Builds the Error Prone {@code excludedPaths} regex that excludes everything under
+     * this project's build directory (where protobuf, Immutables and other generators
+     * emit). Error Prone matches the whole source path, so the {@code .*} guards let the
+     * build-directory-name segment match anywhere in an absolute or relative path.
+     */
+    private static String buildDirExclusionRegex(Project project) {
+        String buildDirName = project.getLayout().getBuildDirectory().get().getAsFile().getName();
+        return ".*[/\\\\]" + Pattern.quote(buildDirName) + "[/\\\\].*";
+    }
+
+    /**
      * Discovers the project's own top-level Java packages by scanning the source roots
      * of every source set, then reduces them to the minimal set of prefixes (a package
      * is dropped when a shorter kept package already covers it). Returns a comma-joined
@@ -270,10 +290,16 @@ public class MyStylePlugin implements Plugin<Project> {
      */
     private static String discoverAnnotatedPackages(Project project) {
         JavaPluginExtension javaExt = project.getExtensions().findByType(JavaPluginExtension.class);
+        Path buildDir = project.getLayout().getBuildDirectory().get().getAsFile().toPath();
         Set<String> packages = new TreeSet<>();
         if (javaExt != null) {
             for (SourceSet sourceSet : javaExt.getSourceSets()) {
                 for (File root : sourceSet.getJava().getSrcDirs()) {
+                    // Skip generated-source roots (e.g. protobuf adds dirs under build/);
+                    // their packages are not "ours" and must not anchor NullAway.
+                    if (root.toPath().toAbsolutePath().startsWith(buildDir.toAbsolutePath())) {
+                        continue;
+                    }
                     collectPackages(root.toPath(), packages);
                 }
             }

@@ -21,6 +21,13 @@
          SuppressWarningsHolder inside TreeWalker below). -->
     <module name="SuppressWarningsFilter"/>
 
+    <!-- Never check generated code. Some plugins (e.g. protobuf) add their
+         generated output under build/ to the source set, which Checkstyle would
+         otherwise scan. Exclude any file path that contains a build/ segment. -->
+    <module name="BeforeExecutionExclusionFileFilter">
+        <property name="fileNamePattern" value="[/\\]build[/\\]"/>
+    </module>
+
     <module name="TreeWalker">
         <module name="SuppressWarningsHolder"/>
 

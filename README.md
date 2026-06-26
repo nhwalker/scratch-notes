@@ -40,7 +40,12 @@ A small Gradle plugin (Java) that standardizes code formatting. Applying it:
   on: high-confidence correctness bugs as **errors** (`TimeUnitMismatch`,
   `EqualsBrokenForNull`, `FunctionalInterfaceClash`) and advisory checks as **warnings**
   (the `*MissingNullable` family that pairs with NullAway, `EqualsGetClass`,
-  `InconsistentOverloads`, `CheckedExceptionNotThrown`);
+  `InconsistentOverloads`, `CheckedExceptionNotThrown`). **Generated code is
+  exempt from every check:** anything under the `build/` directory (protobuf,
+  Immutables, gRPC, etc.) is excluded from Error Prone (`excludedPaths`, which
+  also covers NullAway and the error-level checks) and Checkstyle (a
+  `BeforeExecutionExclusionFileFilter`), NullAway additionally skips
+  `@Generated` classes, and Spotless only ever touches `src/**`;
 - if the `eclipse` plugin is also applied, merges settings into
   `.settings/org.eclipse.jdt.core.prefs` to:
   - turn up the built-in Eclipse JDT compiler warnings (unused code, null

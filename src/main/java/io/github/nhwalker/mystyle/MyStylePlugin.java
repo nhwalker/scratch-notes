@@ -67,6 +67,16 @@ public class MyStylePlugin implements Plugin<Project> {
     private static final String JSPECIFY = "org.jspecify:jspecify:1.0.0";
 
     /**
+     * javac {@code -Xlint} configuration: everything, minus the noisy/meta categories.
+     * {@code processing} is annotation-processor chatter, {@code serial} nags for
+     * serialVersionUID on every Serializable, {@code path} flags missing classpath
+     * entries (environment noise), and {@code options} warns about obsolete -source/
+     * -target. Left as warnings (no -Werror, which would also escalate the deliberately
+     * warning-level Error Prone checks).
+     */
+    private static final String JAVAC_LINT_ARG = "-Xlint:all,-processing,-serial,-path,-options";
+
+    /**
      * High-confidence Error Prone checks that are off by default but worth failing the
      * build on. These catch real correctness bugs (no overlap with Spotless/Checkstyle).
      */
@@ -121,6 +131,7 @@ public class MyStylePlugin implements Plugin<Project> {
         configureSpotless(project);
         configureCheckstyle(project);
         configureErrorProne(project);
+        configureJavacLint(project);
         configureEclipseWhenPresent(project);
     }
 
@@ -194,6 +205,18 @@ public class MyStylePlugin implements Plugin<Project> {
         checkstyle.setToolVersion(CHECKSTYLE_VERSION);
         checkstyle.setConfig(
                 project.getResources().getText().fromString(loadResource(CHECKSTYLE_CONFIG_RESOURCE)));
+    }
+
+    /**
+     * Turns on javac's own {@code -Xlint} warnings for every {@code JavaCompile} task.
+     * Gated on the {@code java} plugin so the tasks exist. Generated code typically
+     * carries {@code @SuppressWarnings}, and we do not use {@code -Werror}, so generated
+     * sources are unaffected.
+     */
+    private void configureJavacLint(Project project) {
+        project.getPluginManager().withPlugin("java", applied -> project.getTasks()
+                .withType(JavaCompile.class)
+                .configureEach(task -> task.getOptions().getCompilerArgs().add(JAVAC_LINT_ARG)));
     }
 
     /** Reads a UTF-8 resource bundled in this plugin's jar into a String. */

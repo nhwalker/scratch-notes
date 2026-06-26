@@ -46,6 +46,13 @@ A small Gradle plugin (Java) that standardizes code formatting. Applying it:
   also covers NullAway and the error-level checks) and Checkstyle (a
   `BeforeExecutionExclusionFileFilter`), NullAway additionally skips
   `@Generated` classes, and Spotless only ever touches `src/**`;
+- turns on javac's own `-Xlint` warnings on every `JavaCompile`
+  (`-Xlint:all,-processing,-serial,-path,-options` — everything minus the
+  noisy/meta categories), catching compiler-level issues like `unchecked`,
+  `rawtypes`, `deprecation`, `this-escape` and `try`. These are left as
+  warnings: `-Werror` is intentionally not enabled because it would also
+  escalate the deliberately warning-level Error Prone checks into build
+  failures;
 - if the `eclipse` plugin is also applied, merges settings into
   `.settings/org.eclipse.jdt.core.prefs` to:
   - turn up the built-in Eclipse JDT compiler warnings (unused code, null

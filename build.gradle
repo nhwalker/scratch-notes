@@ -22,6 +22,12 @@ dependencies {
     // plugin's runtime classpath so MyStylePlugin can both apply the
     // plugin by id and configure its extension with the typed Java API.
     implementation 'com.diffplug.spotless:spotless-plugin-gradle:8.7.0'
+
+    // The Error Prone Gradle plugin. Puts the `net.ltgt.errorprone` plugin id and
+    // the typed ErrorProneOptions/CheckSeverity API on our classpath. The actual
+    // Error Prone, NullAway and JSpecify artifacts are added to the *consumer's*
+    // configurations at apply time, not here.
+    implementation 'net.ltgt.gradle:gradle-errorprone-plugin:5.1.0'
 }
 
 gradlePlugin {

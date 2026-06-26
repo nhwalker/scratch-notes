@@ -1,17 +1,31 @@
 package io.github.nhwalker.mystyle;
 
 import com.diffplug.gradle.spotless.SpotlessExtension;
+import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Year;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Set;
+import java.util.TreeSet;
 import java.util.regex.Pattern;
+import java.util.stream.Stream;
+import net.ltgt.gradle.errorprone.CheckSeverity;
+import net.ltgt.gradle.errorprone.ErrorProneOptions;
 import org.gradle.api.GradleException;
 import org.gradle.api.Plugin;
 import org.gradle.api.Project;
+import org.gradle.api.artifacts.dsl.DependencyHandler;
+import org.gradle.api.plugins.ExtensionAware;
+import org.gradle.api.plugins.JavaPluginExtension;
 import org.gradle.api.plugins.quality.CheckstyleExtension;
+import org.gradle.api.tasks.SourceSet;
+import org.gradle.api.tasks.compile.JavaCompile;
 import org.gradle.plugins.ide.eclipse.model.EclipseModel;
 
 /**
@@ -39,6 +53,18 @@ public class MyStylePlugin implements Plugin<Project> {
 
     /** Classpath location of the bundled Checkstyle config. */
     private static final String CHECKSTYLE_CONFIG_RESOURCE = "/my-style/checkstyle.xml";
+
+    /** Error Prone Gradle plugin id. */
+    private static final String ERRORPRONE_PLUGIN_ID = "net.ltgt.errorprone";
+
+    /** Error Prone engine + checks, added to the consumer's {@code errorprone} config. */
+    private static final String ERROR_PRONE_CORE = "com.google.errorprone:error_prone_core:2.50.0";
+
+    /** NullAway check, added to the consumer's {@code errorprone} config. */
+    private static final String NULLAWAY = "com.uber.nullaway:nullaway:0.13.7";
+
+    /** JSpecify nullness annotations ({@code @Nullable}, {@code @NullUnmarked}, ...). */
+    private static final String JSPECIFY = "org.jspecify:jspecify:1.0.0";
 
     /**
      * Placeholder license header, added only to files that have no header yet.
@@ -70,6 +96,7 @@ public class MyStylePlugin implements Plugin<Project> {
     public void apply(Project project) {
         configureSpotless(project);
         configureCheckstyle(project);
+        configureErrorProne(project);
         configureEclipseWhenPresent(project);
     }
 
@@ -154,6 +181,107 @@ public class MyStylePlugin implements Plugin<Project> {
             return new String(in.readAllBytes(), StandardCharsets.UTF_8);
         } catch (IOException e) {
             throw new GradleException("Failed to read bundled resource: " + resourcePath, e);
+        }
+    }
+
+    /**
+     * Applies Error Prone + NullAway to the project's Java compilation. Gated on the
+     * {@code java} plugin so that source sets, {@code JavaCompile} tasks, and the
+     * {@code errorprone} configuration exist. The engine and NullAway are added to the
+     * {@code errorprone} configuration (the compiler's annotation-processor path) and so
+     * never reach the consumer's compile/runtime classpath; only the small JSpecify
+     * annotations jar lands on the compile-only classpath.
+     */
+    private void configureErrorProne(Project project) {
+        project.getPluginManager().withPlugin("java", applied -> {
+            project.getPluginManager().apply(ERRORPRONE_PLUGIN_ID);
+
+            DependencyHandler deps = project.getDependencies();
+            deps.add("errorprone", ERROR_PRONE_CORE);
+            deps.add("errorprone", NULLAWAY);
+            deps.add("compileOnly", JSPECIFY);
+            deps.add("testCompileOnly", JSPECIFY);
+
+            // "Mine" = the packages this module actually has source for. Computed once,
+            // here at configuration time, into a plain String -> config-cache safe.
+            String annotatedPackages = discoverAnnotatedPackages(project);
+            if (annotatedPackages.isEmpty()) {
+                project.getLogger()
+                        .warn("my-style-plugin: no source packages or project.group found; "
+                                + "NullAway is disabled for {}.", project.getPath());
+            }
+
+            project.getTasks().withType(JavaCompile.class).configureEach(task -> {
+                ErrorProneOptions ep = ((ExtensionAware) task.getOptions())
+                        .getExtensions()
+                        .getByType(ErrorProneOptions.class);
+                ep.getDisableWarningsInGeneratedCode().set(true);
+                if (annotatedPackages.isEmpty()) {
+                    // Nothing to anchor NullAway to; leave the rest of Error Prone on.
+                    ep.check("NullAway", CheckSeverity.OFF);
+                } else {
+                    // Check everything under our packages; opt out with @NullUnmarked.
+                    ep.check("NullAway", CheckSeverity.ERROR);
+                    ep.option("NullAway:AnnotatedPackages", annotatedPackages);
+                    ep.option("NullAway:JSpecifyMode", "true");
+                    ep.option("NullAway:HandleTestAssertionLibraries", "true");
+                }
+            });
+        });
+    }
+
+    /**
+     * Discovers the project's own top-level Java packages by scanning the source roots
+     * of every source set, then reduces them to the minimal set of prefixes (a package
+     * is dropped when a shorter kept package already covers it). Returns a comma-joined
+     * list suitable for NullAway's {@code AnnotatedPackages}, or {@code project.group}
+     * (else an empty string) when no source is found.
+     */
+    private static String discoverAnnotatedPackages(Project project) {
+        JavaPluginExtension javaExt = project.getExtensions().findByType(JavaPluginExtension.class);
+        Set<String> packages = new TreeSet<>();
+        if (javaExt != null) {
+            for (SourceSet sourceSet : javaExt.getSourceSets()) {
+                for (File root : sourceSet.getJava().getSrcDirs()) {
+                    collectPackages(root.toPath(), packages);
+                }
+            }
+        }
+
+        Set<String> minimal = new TreeSet<>();
+        for (String pkg : packages) { // TreeSet => shorter prefixes are visited first
+            if (minimal.stream().noneMatch(kept -> pkg.equals(kept) || pkg.startsWith(kept + "."))) {
+                minimal.add(pkg);
+            }
+        }
+        if (!minimal.isEmpty()) {
+            return String.join(",", minimal);
+        }
+        String group = String.valueOf(project.getGroup());
+        return group.isEmpty() ? "" : group;
+    }
+
+    /**
+     * Walks a single source root, adding the package of every {@code .java} file (derived
+     * from its directory relative to {@code root}). Skips {@code module-info.java} and any
+     * default-package file (which would otherwise yield an everything-matching prefix).
+     */
+    private static void collectPackages(Path root, Set<String> packages) {
+        if (!Files.isDirectory(root)) {
+            return;
+        }
+        try (Stream<Path> files = Files.walk(root)) {
+            files.filter(Files::isRegularFile)
+                    .filter(p -> p.getFileName().toString().endsWith(".java"))
+                    .filter(p -> !p.getFileName().toString().equals("module-info.java"))
+                    .forEach(p -> {
+                        Path relativeDir = root.relativize(p).getParent();
+                        if (relativeDir != null) { // null => default package, skip
+                            packages.add(relativeDir.toString().replace(File.separatorChar, '.'));
+                        }
+                    });
+        } catch (IOException e) {
+            throw new UncheckedIOException("Failed to scan source root: " + root, e);
         }
     }
 

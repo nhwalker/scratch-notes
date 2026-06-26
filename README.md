@@ -24,6 +24,18 @@ A small Gradle plugin (Java) that standardizes code formatting. Applying it:
   placement rules). The config ships inside the plugin jar, so consumers don't
   need their own `checkstyle.xml`. Suppress locally with
   `@SuppressWarnings("checkstyle:<id>")`;
+- applies **Error Prone** (5.1.0 plugin / `error_prone_core` 2.50.0) with **NullAway**
+  (0.13.7) for compile-time null-safety, gated on the `java` plugin. NullAway uses the
+  *opt-out* model: every package this module has source for is checked (the package
+  set is auto-discovered by scanning your source roots — no config needed), and a
+  null-safety violation **fails the build**. Opt a class or method out with JSpecify's
+  `@NullUnmarked`; annotate nullable values with `@Nullable`. JSpecify (1.0.0) is added
+  as `compileOnly`/`testCompileOnly`. **Classpath note:** `error_prone_core` and
+  `nullaway` live only on the compiler's annotation-processor path — they are **not** on
+  your `compileClasspath`/`runtimeClasspath` and never leak to downstream consumers; the
+  only compile-classpath addition is the small JSpecify annotations jar (compile-only,
+  not at runtime). Projects whose package root differs from what's scanned can override
+  `options.errorprone.option("NullAway:AnnotatedPackages", ...)` in their own build;
 - if the `eclipse` plugin is also applied, merges settings into
   `.settings/org.eclipse.jdt.core.prefs` to:
   - turn up the built-in Eclipse JDT compiler warnings (unused code, null
@@ -47,4 +59,5 @@ plugins {
 Then run `./gradlew spotlessApply` to format, or `./gradlew spotlessCheck` to verify.
 Run `./gradlew checkstyleMain checkstyleTest` (or just `./gradlew check`) to run
 Checkstyle. The Checkstyle tool is resolved from the project's repositories, so
-make sure one (e.g. `mavenCentral()`) is declared.
+make sure one (e.g. `mavenCentral()`) is declared. Error Prone / NullAway run as part
+of `compileJava` (also from your repositories), so `mavenCentral()` covers them too.

@@ -13,10 +13,13 @@ A small Gradle plugin (Java) that standardizes code formatting. Applying it:
     `MyFormatterPlugin.LICENSE_HEADER`),
   - removes unused imports, formats annotations, trims trailing whitespace, ends
     files with a newline, and honors `// spotless:off` / `// spotless:on` fences;
-- if the `eclipse` plugin is also applied, turns up the built-in Eclipse JDT
-  compiler warnings (unused code, null hazards, raw types, resource leaks,
-  missing `@Override`, etc.) by merging settings into
-  `.settings/org.eclipse.jdt.core.prefs`.
+- if the `eclipse` plugin is also applied, merges settings into
+  `.settings/org.eclipse.jdt.core.prefs` to:
+  - turn up the built-in Eclipse JDT compiler warnings (unused code, null
+    hazards, raw types, resource leaks, missing `@Override`, etc.), and
+  - set the JDT formatter/indentation to match Palantir (4-space indents using
+    spaces, 8-space continuation indent, 120-column lines) so the Eclipse editor
+    indents the same way `spotlessApply` formats.
 
 Built and tested with **Gradle 9.2.1** (`./gradlew build`).
 

@@ -88,9 +88,45 @@ public class MyFormatterPlugin implements Plugin<Project> {
     private void configureEclipseWhenPresent(Project project) {
         project.getPluginManager().withPlugin("eclipse", applied -> {
             EclipseModel eclipse = project.getExtensions().getByType(EclipseModel.class);
-            // Merge our warning settings into .settings/org.eclipse.jdt.core.prefs.
-            eclipse.getJdt().getFile().withProperties(props -> props.putAll(jdtWarningSettings()));
+            // Merge our settings into .settings/org.eclipse.jdt.core.prefs. The
+            // formatter keys make the Eclipse Java editor indent the same way
+            // Palantir does, so editing in Eclipse and running spotlessApply
+            // agree instead of fighting each other.
+            eclipse.getJdt().getFile().withProperties(props -> {
+                props.putAll(jdtWarningSettings());
+                props.putAll(jdtPalantirFormatterSettings());
+            });
         });
+    }
+
+    /**
+     * Eclipse JDT formatter settings that mirror the Palantir Java style for the
+     * things that matter for indentation: 4-space indents (spaces, never tabs),
+     * an 8-space continuation indent, and a 120-column line width. With these in
+     * {@code org.eclipse.jdt.core.prefs} the Eclipse editor types and auto-indents
+     * exactly as Palantir formats.
+     */
+    private static Map<String, String> jdtPalantirFormatterSettings() {
+        Map<String, String> p = new LinkedHashMap<>();
+        String prefix = "org.eclipse.jdt.core.formatter.";
+
+        // Indent with spaces, 4 per level (Palantir uses spaces, not tabs).
+        p.put(prefix + "tabulation.char", "space");
+        p.put(prefix + "tabulation.size", "4");
+        p.put(prefix + "indentation.size", "4");
+        p.put(prefix + "use_tabs_only_for_leading_indentations", "false");
+        p.put(prefix + "indent_empty_lines", "false");
+
+        // Continuation lines indent by two units (2 x 4 = 8 spaces), matching
+        // Palantir's +8 continuation indent.
+        p.put(prefix + "continuation_indentation", "2");
+        p.put(prefix + "continuation_indentation_for_array_initializer", "2");
+
+        // 120-column lines, like Palantir.
+        p.put(prefix + "lineSplit", "120");
+        p.put(prefix + "comment.line_length", "120");
+
+        return p;
     }
 
     /**

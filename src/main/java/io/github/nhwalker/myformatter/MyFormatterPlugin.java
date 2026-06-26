@@ -29,16 +29,15 @@ public class MyFormatterPlugin implements Plugin<Project> {
      * Placeholder license header. Spotless substitutes {@code $YEAR} with the
      * current year. Replace this text with your project's real header.
      */
-    private static final String LICENSE_HEADER = String.join(
-            "\n",
-            "/*",
-            " * Copyright (C) $YEAR PLACEHOLDER ORGANIZATION. All rights reserved.",
-            " *",
-            " * PLACEHOLDER LICENSE HEADER -- replace this text with the real",
-            " * license header for your project before publishing.",
-            " */",
-            "",
-            "");
+    private static final String LICENSE_HEADER =
+            """
+            /*
+             * Copyright (C) $YEAR PLACEHOLDER ORGANIZATION. All rights reserved.
+             *
+             * PLACEHOLDER LICENSE HEADER -- replace this text with the real
+             * license header for your project before publishing.
+             */
+            """;
 
     @Override
     public void apply(Project project) {

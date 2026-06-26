@@ -71,3 +71,11 @@ Run `./gradlew checkstyleMain checkstyleTest` (or just `./gradlew check`) to run
 Checkstyle. The Checkstyle tool is resolved from the project's repositories, so
 make sure one (e.g. `mavenCentral()`) is declared. Error Prone / NullAway run as part
 of `compileJava` (also from your repositories), so `mavenCentral()` covers them too.
+
+### CI
+
+`gitlab-cicd-example.yml` is a ready-to-adapt GitLab pipeline that runs all of
+these checks and exposes GitLab-native reports where they exist — Checkstyle as a
+**Code Quality** report (MR widget, converted from Checkstyle XML) and tests as a
+**JUnit** report. Spotless and Error Prone/NullAway are pass/fail gates (details in
+the job log). Copy it to `.gitlab-ci.yml` to use it.

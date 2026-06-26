@@ -1,0 +1,162 @@
+# =============================================================================
+# Example GitLab CI/CD pipeline for a project that applies `my-style-plugin`.
+#
+# Copy this to `.gitlab-ci.yml` in a consumer project. The plugin contributes
+# the tasks used below:
+#   - spotlessCheck                  (formatting: Palantir + license header)
+#   - checkstyleMain / checkstyleTest (good-practice rules)
+#   - compileJava / compileTestJava  (Error Prone + NullAway run inside javac)
+#   - test                           (your unit tests)
+#
+# GitLab-native reports are produced "where appropriate":
+#   - Checkstyle violations -> Code Quality report (shown in the MR widget and
+#     the "Code Quality" tab) by converting Checkstyle XML to the CodeClimate
+#     JSON format GitLab expects.
+#   - Tests -> JUnit report (shown in the MR widget and "Tests" tab).
+#
+# Spotless and Error Prone/NullAway are pass/fail compiler-style gates with no
+# structured GitLab report format; when they fail, the details are in the job
+# log and the pipeline goes red. See the comments on those jobs.
+# =============================================================================
+
+# Run one pipeline per change: on merge requests, on branches without an open
+# MR, and on tags. Avoids duplicate "branch + MR" pipelines.
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS == null'
+    - if: '$CI_COMMIT_TAG'
+
+stages:
+  - build
+  - quality
+  - test
+
+default:
+  # JDK 21 — required by the plugin (Gradle 9.2.1 runs on a Java 17+ daemon,
+  # and Error Prone/NullAway are happy on 21).
+  image: eclipse-temurin:21-jdk
+  # Cache the Gradle wrapper distribution and the dependency cache per branch so
+  # Error Prone, NullAway, Checkstyle and JSpecify aren't re-downloaded each run.
+  cache:
+    key: "$CI_COMMIT_REF_SLUG"
+    paths:
+      - .gradle/wrapper
+      - .gradle/caches
+  before_script:
+    - chmod +x ./gradlew
+
+variables:
+  # Keep the Gradle home inside the workspace so the cache: paths above apply.
+  GRADLE_USER_HOME: "$CI_PROJECT_DIR/.gradle"
+  # No daemon in CI; turn on the build cache for faster incremental jobs.
+  GRADLE_OPTS: "-Dorg.gradle.daemon=false"
+  GRADLE_FLAGS: "--build-cache --console=plain --stacktrace"
+
+# -----------------------------------------------------------------------------
+# Error Prone + NullAway run as part of compilation. Compiling main AND test
+# sources here makes both null-safety and the Error Prone checks a hard gate.
+# There is no structured GitLab report for compiler diagnostics: a violation
+# fails this job and the offending file/line is printed in the job log.
+# -----------------------------------------------------------------------------
+compile (errorprone + nullaway):
+  stage: build
+  script:
+    - ./gradlew $GRADLE_FLAGS classes testClasses
+
+# -----------------------------------------------------------------------------
+# Checkstyle -> GitLab Code Quality.
+# Checkstyle always writes build/reports/checkstyle/*.xml (even when it fails on
+# violations), so we convert that to the CodeClimate JSON GitLab ingests. The
+# conversion runs in after_script so it happens whether or not the task passed,
+# and artifacts are uploaded `when: always` so the report still appears on a
+# red pipeline (that's how reviewers see the violations in the MR).
+# -----------------------------------------------------------------------------
+checkstyle:
+  stage: quality
+  needs: []
+  script:
+    - ./gradlew $GRADLE_FLAGS checkstyleMain checkstyleTest
+  after_script:
+    - |
+      # python3 is used only to convert Checkstyle XML -> CodeClimate JSON.
+      # Install it if the image doesn't ship it (or bake it into a custom image).
+      if ! command -v python3 >/dev/null 2>&1; then
+        apt-get update -qq && apt-get install -y -qq python3
+      fi
+      python3 - <<'PY'
+      import glob, hashlib, json, os
+      import xml.etree.ElementTree as ET
+
+      project_dir = os.environ.get("CI_PROJECT_DIR", os.getcwd())
+      # Checkstyle "error" severity is our default; map to GitLab severities.
+      severity = {"error": "major", "warning": "minor", "info": "info", "ignore": "info"}
+
+      issues = []
+      for xml_file in glob.glob("build/reports/checkstyle/*.xml"):
+          for file_el in ET.parse(xml_file).getroot().findall("file"):
+              path = os.path.relpath(file_el.get("name"), project_dir)
+              for err in file_el.findall("error"):
+                  line = int(err.get("line", "1"))
+                  source = err.get("source", "checkstyle")
+                  check = source.rsplit(".", 1)[-1]
+                  if check.endswith("Check"):
+                      check = check[:-5]
+                  message = err.get("message", check)
+                  fingerprint = hashlib.sha256(
+                      f"{path}:{line}:{source}:{message}".encode()
+                  ).hexdigest()
+                  issues.append({
+                      "description": message,
+                      "check_name": check,
+                      "fingerprint": fingerprint,
+                      "severity": severity.get(err.get("severity"), "minor"),
+                      "location": {"path": path, "lines": {"begin": line}},
+                  })
+
+      with open("gl-code-quality-report.json", "w") as out:
+          json.dump(issues, out, indent=2)
+      print(f"Wrote {len(issues)} Checkstyle issue(s) to gl-code-quality-report.json")
+      PY
+  artifacts:
+    when: always
+    expire_in: 1 week
+    paths:
+      # Browsable HTML/XML reports attached to the job.
+      - build/reports/checkstyle/
+    reports:
+      codequality: gl-code-quality-report.json
+
+# -----------------------------------------------------------------------------
+# Spotless: formatting gate. No structured GitLab report exists for it.
+# If this fails, the fix is to run `./gradlew spotlessApply` locally and commit.
+# spotlessCheck prints exactly which files differ in the job log.
+# -----------------------------------------------------------------------------
+spotless:
+  stage: quality
+  needs: []
+  script:
+    - ./gradlew $GRADLE_FLAGS spotlessCheck
+  # Make the remediation obvious in the log when the job fails.
+  after_script:
+    - >
+      if [ "$CI_JOB_STATUS" = "failed" ]; then
+        echo "Formatting check failed. Run './gradlew spotlessApply' locally and commit the result.";
+      fi
+
+# -----------------------------------------------------------------------------
+# Unit tests -> GitLab JUnit report (MR widget + "Tests" tab).
+# -----------------------------------------------------------------------------
+test:
+  stage: test
+  needs: ["compile (errorprone + nullaway)"]
+  script:
+    - ./gradlew $GRADLE_FLAGS test
+  artifacts:
+    when: always
+    expire_in: 1 week
+    paths:
+      - build/reports/tests/
+    reports:
+      junit:
+        - build/test-results/test/**/TEST-*.xml

@@ -269,11 +269,13 @@ public class MyStylePlugin implements Plugin<Project> {
         p.put(prefix + "assertIdentifier", "error");
         p.put(prefix + "enumIdentifier", "error");
 
-        // @SuppressWarnings should be honoured, and unused/unhandled tokens
-        // flagged so suppressions stay meaningful.
+        // @SuppressWarnings should be honoured. Allow unrecognized tokens
+        // (e.g. "checkstyle:..." or other tools' tokens) by ignoring
+        // unhandledWarningToken -- otherwise Eclipse flags every non-JDT token.
+        // unusedWarningToken stays a warning so JDT's own tokens don't rot.
         p.put(prefix + "suppressWarnings", "enabled");
         p.put(prefix + "unusedWarningToken", "warning");
-        p.put(prefix + "unhandledWarningToken", "warning");
+        p.put(prefix + "unhandledWarningToken", "ignore");
 
         return p;
     }

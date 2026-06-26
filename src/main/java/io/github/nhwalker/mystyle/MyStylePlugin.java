@@ -1,4 +1,4 @@
-package io.github.nhwalker.myformatter;
+package io.github.nhwalker.mystyle;
 
 import com.diffplug.gradle.spotless.SpotlessExtension;
 import java.time.Year;
@@ -10,7 +10,7 @@ import org.gradle.api.Project;
 import org.gradle.plugins.ide.eclipse.model.EclipseModel;
 
 /**
- * The {@code my-formatter} plugin.
+ * The {@code my-style-plugin} plugin.
  *
  * <p>Applying this plugin to a project will:
  *
@@ -22,7 +22,7 @@ import org.gradle.plugins.ide.eclipse.model.EclipseModel;
  *       the {@code eclipse} plugin is also applied to the project.
  * </ul>
  */
-public class MyFormatterPlugin implements Plugin<Project> {
+public class MyStylePlugin implements Plugin<Project> {
 
     /** Plugin id of the Spotless Gradle plugin. */
     private static final String SPOTLESS_PLUGIN_ID = "com.diffplug.spotless";
@@ -96,7 +96,7 @@ public class MyFormatterPlugin implements Plugin<Project> {
             // filled-in FIXME or a changed company name survive. The bump call
             // tells Spotless this custom step's behaviour is versioned.
             java.bumpThisNumberIfACustomStepChanges(1);
-            java.custom("addHeaderIfMissing", MyFormatterPlugin::addHeaderIfMissing);
+            java.custom("addHeaderIfMissing", MyStylePlugin::addHeaderIfMissing);
         });
     }
 

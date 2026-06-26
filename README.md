@@ -2,7 +2,7 @@
 
 space for test and playing with different things
 
-## my-formatter Gradle plugin
+## my-style-plugin Gradle plugin
 
 A small Gradle plugin (Java) that standardizes code formatting. Applying it:
 
@@ -10,7 +10,7 @@ A small Gradle plugin (Java) that standardizes code formatting. Applying it:
   configures a Java format that:
   - uses the **Palantir Java formatter** (modern, lambda-friendly, 120 columns),
   - adds a **placeholder** license header (first line `Category: FIXME`; replace
-    the text in `MyFormatterPlugin.LICENSE_HEADER`) **only to files that don't
+    the text in `MyStylePlugin.LICENSE_HEADER`) **only to files that don't
     already have a header** — detection is generous (any leading `/* */` or `//`
     comment counts), so once you fill in the FIXME or change the company name the
     header is left untouched,
@@ -32,7 +32,7 @@ Built and tested with **Gradle 9.2.1** (`./gradlew build`).
 plugins {
     id 'java'
     id 'eclipse'      // optional — enables the JDT warning tightening
-    id 'my-formatter'
+    id 'my-style-plugin'
 }
 ```
 

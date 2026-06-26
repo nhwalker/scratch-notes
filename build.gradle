@@ -19,17 +19,17 @@ java {
 
 dependencies {
     // The Spotless Gradle plugin. Declaring it here puts its classes on the
-    // plugin's runtime classpath so MyFormatterPlugin can both apply the
+    // plugin's runtime classpath so MyStylePlugin can both apply the
     // plugin by id and configure its extension with the typed Java API.
     implementation 'com.diffplug.spotless:spotless-plugin-gradle:8.7.0'
 }
 
 gradlePlugin {
     plugins {
-        myFormatter {
-            id = 'my-formatter'
-            implementationClass = 'io.github.nhwalker.myformatter.MyFormatterPlugin'
-            displayName = 'My Formatter Plugin'
+        myStyle {
+            id = 'my-style-plugin'
+            implementationClass = 'io.github.nhwalker.mystyle.MyStylePlugin'
+            displayName = 'My Style Plugin'
             description = 'Applies and configures Spotless with the Palantir Java ' +
                 'formatter and a license header, and tightens the Eclipse JDT ' +
                 'compiler warnings when the eclipse plugin is present.'

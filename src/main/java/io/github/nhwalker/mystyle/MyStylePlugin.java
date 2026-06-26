@@ -1,12 +1,17 @@
 package io.github.nhwalker.mystyle;
 
 import com.diffplug.gradle.spotless.SpotlessExtension;
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.time.Year;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.regex.Pattern;
+import org.gradle.api.GradleException;
 import org.gradle.api.Plugin;
 import org.gradle.api.Project;
+import org.gradle.api.plugins.quality.CheckstyleExtension;
 import org.gradle.plugins.ide.eclipse.model.EclipseModel;
 
 /**
@@ -17,7 +22,9 @@ import org.gradle.plugins.ide.eclipse.model.EclipseModel;
  * <ul>
  *   <li>apply the Spotless plugin and configure a Java format that uses the
  *       Palantir Java formatter, a license header, and a set of highly readable
- *       clean-up steps; and
+ *       clean-up steps;
+ *   <li>apply the Checkstyle plugin with a bundled config that enforces good
+ *       practices (and deliberately leaves formatting to Spotless); and
  *   <li>tighten the built-in Eclipse JDT compiler warnings &mdash; but only if
  *       the {@code eclipse} plugin is also applied to the project.
  * </ul>
@@ -26,6 +33,12 @@ public class MyStylePlugin implements Plugin<Project> {
 
     /** Plugin id of the Spotless Gradle plugin. */
     private static final String SPOTLESS_PLUGIN_ID = "com.diffplug.spotless";
+
+    /** Checkstyle tool version pinned for the bundled config. */
+    private static final String CHECKSTYLE_VERSION = "13.6.0";
+
+    /** Classpath location of the bundled Checkstyle config. */
+    private static final String CHECKSTYLE_CONFIG_RESOURCE = "/my-style/checkstyle.xml";
 
     /**
      * Placeholder license header, added only to files that have no header yet.
@@ -56,6 +69,7 @@ public class MyStylePlugin implements Plugin<Project> {
     @Override
     public void apply(Project project) {
         configureSpotless(project);
+        configureCheckstyle(project);
         configureEclipseWhenPresent(project);
     }
 
@@ -114,6 +128,33 @@ public class MyStylePlugin implements Plugin<Project> {
         // LICENSE_HEADER already ends with a newline; the extra one leaves a
         // blank line between the header and the package declaration.
         return header + "\n" + content;
+    }
+
+    /**
+     * Applies the (built-in) Checkstyle plugin, pins the tool version, and feeds
+     * it the bundled config that enforces good practices while leaving formatting
+     * to Spotless. The config travels inside this plugin's jar, so consumers do
+     * not need to copy a {@code checkstyle.xml} into their projects.
+     */
+    private void configureCheckstyle(Project project) {
+        project.getPluginManager().apply("checkstyle");
+
+        CheckstyleExtension checkstyle = project.getExtensions().getByType(CheckstyleExtension.class);
+        checkstyle.setToolVersion(CHECKSTYLE_VERSION);
+        checkstyle.setConfig(
+                project.getResources().getText().fromString(loadResource(CHECKSTYLE_CONFIG_RESOURCE)));
+    }
+
+    /** Reads a UTF-8 resource bundled in this plugin's jar into a String. */
+    private static String loadResource(String resourcePath) {
+        try (InputStream in = MyStylePlugin.class.getResourceAsStream(resourcePath)) {
+            if (in == null) {
+                throw new GradleException("Bundled resource not found on classpath: " + resourcePath);
+            }
+            return new String(in.readAllBytes(), StandardCharsets.UTF_8);
+        } catch (IOException e) {
+            throw new GradleException("Failed to read bundled resource: " + resourcePath, e);
+        }
     }
 
     /**

@@ -16,6 +16,14 @@ A small Gradle plugin (Java) that standardizes code formatting. Applying it:
     header is left untouched,
   - removes unused imports, formats annotations, trims trailing whitespace, ends
     files with a newline, and honors `// spotless:off` / `// spotless:on` fences;
+- applies the built-in **Checkstyle** plugin (Checkstyle 13.6.0) with a bundled
+  config that enforces good *practices* — naming, imports (no star/unused),
+  coding hazards (`==` on strings, fall-through, empty catches, missing switch
+  default, …), design (final/utility classes), `@Override`, etc. — while
+  **leaving all formatting to Spotless** (no whitespace/indent/wrapping/brace-
+  placement rules). The config ships inside the plugin jar, so consumers don't
+  need their own `checkstyle.xml`. Suppress locally with
+  `@SuppressWarnings("checkstyle:<id>")`;
 - if the `eclipse` plugin is also applied, merges settings into
   `.settings/org.eclipse.jdt.core.prefs` to:
   - turn up the built-in Eclipse JDT compiler warnings (unused code, null
@@ -37,3 +45,6 @@ plugins {
 ```
 
 Then run `./gradlew spotlessApply` to format, or `./gradlew spotlessCheck` to verify.
+Run `./gradlew checkstyleMain checkstyleTest` (or just `./gradlew check`) to run
+Checkstyle. The Checkstyle tool is resolved from the project's repositories, so
+make sure one (e.g. `mavenCentral()`) is declared.

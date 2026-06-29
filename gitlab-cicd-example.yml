@@ -3,8 +3,9 @@
 # subprojects are separate Java libraries, each applying `my-style-plugin`
 # (e.g. via a `subprojects {}` block or a convention plugin in the root build).
 #
-# Copy this to `.gitlab-ci.yml` at the repo root. The plugin contributes the
-# tasks used below:
+# Copy TWO files to the repo root: this file as `.gitlab-ci.yml`, and its
+# companion `gitlab-report-formats.py` (the Checkstyle/SpotBugs jobs call it to
+# produce the Code Quality reports). The plugin contributes the tasks used below:
 #   - spotlessCheck                  (formatting: Palantir + license header)
 #   - checkstyleMain / checkstyleTest (good-practice rules)
 #   - compileJava / compileTestJava  (Error Prone + NullAway run inside javac)
@@ -93,51 +94,14 @@ checkstyle:
   script:
     - ./gradlew $GRADLE_FLAGS checkstyleMain checkstyleTest
   after_script:
+    # Convert Checkstyle XML -> CodeClimate JSON via the companion script (runs in
+    # after_script so it happens even when checkstyle fails on violations). python3
+    # is only needed for this; install it if the image lacks it (or bake it in).
     - |
-      # python3 is used only to convert Checkstyle XML -> CodeClimate JSON.
-      # Install it if the image doesn't ship it (or bake it into a custom image).
       if ! command -v python3 >/dev/null 2>&1; then
         apt-get update -qq && apt-get install -y -qq python3
       fi
-      python3 - <<'PY'
-      import glob, hashlib, json, os
-      import xml.etree.ElementTree as ET
-
-      project_dir = os.environ.get("CI_PROJECT_DIR", os.getcwd())
-      # Checkstyle "error" severity is our default; map to GitLab severities.
-      severity = {"error": "major", "warning": "minor", "info": "info", "ignore": "info"}
-
-      issues = []
-      # Recursive glob collects every module's report (and the single-project case).
-      for xml_file in glob.glob("**/build/reports/checkstyle/*.xml", recursive=True):
-          for file_el in ET.parse(xml_file).getroot().findall("file"):
-              # <file name> is absolute; relativize to the repo root so the path
-              # renders as e.g. moduleA/src/main/java/...
-              path = os.path.relpath(file_el.get("name"), project_dir)
-              for err in file_el.findall("error"):
-                  line = int(err.get("line", "1"))
-                  source = err.get("source", "checkstyle")
-                  check = source.rsplit(".", 1)[-1]
-                  if check.endswith("Check"):
-                      check = check[:-5]
-                  message = err.get("message", check)
-                  # Path is in the fingerprint, so identical findings in different
-                  # modules stay distinct.
-                  fingerprint = hashlib.sha256(
-                      f"{path}:{line}:{source}:{message}".encode()
-                  ).hexdigest()
-                  issues.append({
-                      "description": message,
-                      "check_name": check,
-                      "fingerprint": fingerprint,
-                      "severity": severity.get(err.get("severity"), "minor"),
-                      "location": {"path": path, "lines": {"begin": line}},
-                  })
-
-      with open("gl-code-quality-report.json", "w") as out:
-          json.dump(issues, out, indent=2)
-      print(f"Wrote {len(issues)} Checkstyle issue(s) to gl-code-quality-report.json")
-      PY
+      python3 gitlab-report-formats.py checkstyle
   artifacts:
     when: always
     expire_in: 1 week
@@ -164,63 +128,12 @@ spotbugs:
   script:
     - ./gradlew $GRADLE_FLAGS spotbugsMain spotbugsTest
   after_script:
+    # Convert SpotBugs XML -> CodeClimate JSON via the companion script.
     - |
       if ! command -v python3 >/dev/null 2>&1; then
         apt-get update -qq && apt-get install -y -qq python3
       fi
-      python3 - <<'PY'
-      import glob, json, os
-      import xml.etree.ElementTree as ET
-
-      project_dir = os.environ.get("CI_PROJECT_DIR", os.getcwd())
-
-      def severity_for(rank, category):
-          try:
-              rank = int(rank)
-          except (TypeError, ValueError):
-              rank = 20
-          sev = "critical" if rank <= 4 else "major" if rank <= 9 else "minor" if rank <= 14 else "info"
-          if category == "SECURITY" and sev in ("minor", "info"):
-              sev = "major"  # make FindSecBugs findings stand out
-          return sev
-
-      issues = []
-      # Recursive glob collects every module's report (and the single-project case).
-      for xml_file in glob.glob("**/build/reports/spotbugs/*.xml", recursive=True):
-          root = ET.parse(xml_file).getroot()
-          srcdirs = [e.text for e in root.findall("./Project/SrcDir") if e.text]
-          for bug in root.findall("BugInstance"):
-              lines = bug.findall(".//SourceLine")
-              sl = next((s for s in lines if s.get("primary") == "true" and s.get("start")), None) \
-                  or next((s for s in lines if s.get("start")), None)
-              if sl is None:
-                  continue
-              sourcepath = sl.get("sourcepath", "")
-              # SpotBugs sourcepath is package-relative; resolve against the source
-              # roots it recorded (per module), then make it repo-relative.
-              path = sourcepath
-              for d in srcdirs:
-                  cand = os.path.join(d, sourcepath)
-                  if os.path.exists(cand):
-                      path = os.path.relpath(cand, project_dir)
-                      break
-              lm = bug.find("LongMessage")
-              desc = lm.text if lm is not None and lm.text else bug.get("type", "SpotBugs finding")
-              instance = bug.get("instanceHash") or f"{sl.get('start')}:{bug.get('type')}"
-              issues.append({
-                  "description": desc,
-                  "check_name": bug.get("type"),
-                  "categories": [bug.get("category", "BUG")],
-                  # Prefix with path so identical findings in different modules differ.
-                  "fingerprint": f"{path}:{instance}",
-                  "severity": severity_for(bug.get("rank"), bug.get("category")),
-                  "location": {"path": path, "lines": {"begin": int(sl.get("start", "1"))}},
-              })
-
-      with open("gl-code-quality-report.json", "w") as out:
-          json.dump(issues, out, indent=2)
-      print(f"Wrote {len(issues)} SpotBugs issue(s) to gl-code-quality-report.json")
-      PY
+      python3 gitlab-report-formats.py spotbugs
   artifacts:
     when: always
     expire_in: 1 week

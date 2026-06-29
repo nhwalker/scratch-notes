@@ -104,3 +104,8 @@ artifact paths and converters collect from `**/build/...` across all modules
 (aggregating each Code Quality report into one per job, with module-prefixed
 paths like `moduleA/src/main/java/...`). It works unchanged for a single-project
 build too.
+
+The Checkstyle/SpotBugs jobs call a companion script, **`gitlab-report-formats.py`**
+(stdlib-only), to convert each tool's XML into the CodeClimate JSON GitLab ingests —
+`python3 gitlab-report-formats.py <checkstyle|spotbugs>`. Copy both files to your repo
+root.

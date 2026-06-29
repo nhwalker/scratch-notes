@@ -53,6 +53,16 @@ A small Gradle plugin (Java) that standardizes code formatting. Applying it:
   warnings: `-Werror` is intentionally not enabled because it would also
   escalate the deliberately warning-level Error Prone checks into build
   failures;
+- applies **SpotBugs** (tool 4.10.2) with the **FindSecBugs** (1.14.0) security
+  detectors and enables the **HTML, XML and SARIF** reports. It runs *advisory*
+  (`ignoreFailures = true`) so findings surface via the reports rather than
+  breaking the build. Generated code is excluded via a `@Generated` annotation
+  filter — note SpotBugs is a bytecode tool, so it can only skip
+  `CLASS`/`RUNTIME`-retained `*.Generated` annotations (e.g. Immutables); the
+  standard `SOURCE`-retained `javax/jakarta` ones and annotation-less output
+  (protobuf) can't be matched, which is the other reason it runs advisory. The
+  SpotBugs/FindSecBugs artifacts stay on dedicated configurations — never the
+  consumer's compile/runtime classpath;
 - if the `eclipse` plugin is also applied, merges settings into
   `.settings/org.eclipse.jdt.core.prefs` to:
   - turn up the built-in Eclipse JDT compiler warnings (unused code, null
@@ -82,7 +92,8 @@ of `compileJava` (also from your repositories), so `mavenCentral()` covers them 
 ### CI
 
 `gitlab-cicd-example.yml` is a ready-to-adapt GitLab pipeline that runs all of
-these checks and exposes GitLab-native reports where they exist — Checkstyle as a
-**Code Quality** report (MR widget, converted from Checkstyle XML) and tests as a
-**JUnit** report. Spotless and Error Prone/NullAway are pass/fail gates (details in
-the job log). Copy it to `.gitlab-ci.yml` to use it.
+these checks and exposes GitLab-native reports where they exist — Checkstyle and
+**SpotBugs/FindSecBugs** as **Code Quality** reports (MR widget + inline diff
+annotations, converted from each tool's XML; GitLab merges them) and tests as a
+**JUnit** report. Spotless, Error Prone/NullAway and `-Xlint` are pass/fail gates
+(details in the job log). Copy it to `.gitlab-ci.yml` to use it.

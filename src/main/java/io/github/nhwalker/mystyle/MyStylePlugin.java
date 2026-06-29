@@ -1,6 +1,8 @@
 package io.github.nhwalker.mystyle;
 
 import com.diffplug.gradle.spotless.SpotlessExtension;
+import com.github.spotbugs.snom.SpotBugsExtension;
+import com.github.spotbugs.snom.SpotBugsTask;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
@@ -17,14 +19,21 @@ import java.util.regex.Pattern;
 import java.util.stream.Stream;
 import net.ltgt.gradle.errorprone.CheckSeverity;
 import net.ltgt.gradle.errorprone.ErrorProneOptions;
+import org.gradle.api.DefaultTask;
 import org.gradle.api.GradleException;
 import org.gradle.api.Plugin;
 import org.gradle.api.Project;
 import org.gradle.api.artifacts.dsl.DependencyHandler;
+import org.gradle.api.file.RegularFileProperty;
 import org.gradle.api.plugins.ExtensionAware;
 import org.gradle.api.plugins.JavaPluginExtension;
 import org.gradle.api.plugins.quality.CheckstyleExtension;
+import org.gradle.api.provider.Property;
+import org.gradle.api.tasks.Input;
+import org.gradle.api.tasks.OutputFile;
 import org.gradle.api.tasks.SourceSet;
+import org.gradle.api.tasks.TaskAction;
+import org.gradle.api.tasks.TaskProvider;
 import org.gradle.api.tasks.compile.JavaCompile;
 import org.gradle.plugins.ide.eclipse.model.EclipseModel;
 
@@ -75,6 +84,34 @@ public class MyStylePlugin implements Plugin<Project> {
      * warning-level Error Prone checks).
      */
     private static final String JAVAC_LINT_ARG = "-Xlint:all,-processing,-serial,-path,-options";
+
+    /** SpotBugs Gradle plugin id. */
+    private static final String SPOTBUGS_PLUGIN_ID = "com.github.spotbugs";
+
+    /** SpotBugs analysis tool version. */
+    private static final String SPOTBUGS_TOOL_VERSION = "4.10.2";
+
+    /** FindSecBugs security detectors, added to the consumer's {@code spotbugsPlugins}. */
+    private static final String FINDSECBUGS = "com.h3xstream.findsecbugs:findsecbugs-plugin:1.14.0";
+
+    /**
+     * SpotBugs exclude filter. SpotBugs analyzes bytecode, so (unlike the source-based
+     * tools) it cannot exclude generated code by {@code build/} path. The portable
+     * equivalent is to skip any class/member carrying a {@code *.Generated} annotation
+     * that survives into bytecode &mdash; i.e. {@code CLASS}/{@code RUNTIME}-retained ones
+     * such as Immutables' {@code @org.immutables.value.Generated}. Note this cannot catch
+     * the standard {@code javax/jakarta.annotation(.processing).Generated} (all
+     * {@code SOURCE}-retained, hence absent from bytecode) or generators that emit no
+     * annotation (e.g. protobuf); SpotBugs runs advisory so those surface as report-only
+     * findings, and consumers can add their own exclude filter if needed.
+     */
+    private static final String SPOTBUGS_EXCLUDE_FILTER =
+            """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <FindBugsFilter>
+                <Match><Annotation name="~.*\\.Generated"/></Match>
+            </FindBugsFilter>
+            """;
 
     /**
      * High-confidence Error Prone checks that are off by default but worth failing the
@@ -132,6 +169,7 @@ public class MyStylePlugin implements Plugin<Project> {
         configureCheckstyle(project);
         configureErrorProne(project);
         configureJavacLint(project);
+        configureSpotBugs(project);
         configureEclipseWhenPresent(project);
     }
 
@@ -217,6 +255,63 @@ public class MyStylePlugin implements Plugin<Project> {
         project.getPluginManager().withPlugin("java", applied -> project.getTasks()
                 .withType(JavaCompile.class)
                 .configureEach(task -> task.getOptions().getCompilerArgs().add(JAVAC_LINT_ARG)));
+    }
+
+    /**
+     * Applies SpotBugs with the FindSecBugs security detectors and enables the HTML, XML
+     * and SARIF reports. Gated on the {@code java} plugin (SpotBugs analyzes compiled
+     * classes). FindSecBugs and the SpotBugs tool go on dedicated configurations, never
+     * the consumer's compile/runtime classpath. Advisory by default
+     * ({@code ignoreFailures = true}) so findings surface via the reports (and the CI
+     * Code Quality conversion) rather than breaking the build.
+     */
+    private void configureSpotBugs(Project project) {
+        project.getPluginManager().withPlugin("java", applied -> {
+            project.getPluginManager().apply(SPOTBUGS_PLUGIN_ID);
+            project.getDependencies().add("spotbugsPlugins", FINDSECBUGS);
+
+            // Materialize the generated-code exclude filter to a file SpotBugs can read.
+            // Done via a task (not at configuration time) so it survives `clean` and the
+            // configuration cache.
+            TaskProvider<WriteSpotBugsExcludeFilter> excludeFilter = project.getTasks()
+                    .register(
+                            "myStyleSpotbugsExcludeFilter",
+                            WriteSpotBugsExcludeFilter.class,
+                            task -> {
+                                task.getContent().set(SPOTBUGS_EXCLUDE_FILTER);
+                                task.getOutputFile()
+                                        .set(project.getLayout()
+                                                .getBuildDirectory()
+                                                .file("my-style/spotbugs-exclude.xml"));
+                            });
+
+            SpotBugsExtension spotbugs = project.getExtensions().getByType(SpotBugsExtension.class);
+            spotbugs.getToolVersion().set(SPOTBUGS_TOOL_VERSION);
+            spotbugs.getIgnoreFailures().set(true);
+            spotbugs.getExcludeFilter().set(excludeFilter.flatMap(WriteSpotBugsExcludeFilter::getOutputFile));
+
+            project.getTasks().withType(SpotBugsTask.class).configureEach(task -> {
+                task.getReports().register("html", report -> report.getRequired().set(true));
+                task.getReports().register("xml", report -> report.getRequired().set(true));
+                task.getReports().register("sarif", report -> report.getRequired().set(true));
+            });
+        });
+    }
+
+    /** Writes the bundled SpotBugs exclude filter to a file the analysis can read. */
+    public abstract static class WriteSpotBugsExcludeFilter extends DefaultTask {
+        @Input
+        public abstract Property<String> getContent();
+
+        @OutputFile
+        public abstract RegularFileProperty getOutputFile();
+
+        @TaskAction
+        public void write() throws IOException {
+            File out = getOutputFile().get().getAsFile();
+            Files.createDirectories(out.toPath().getParent());
+            Files.writeString(out.toPath(), getContent().get(), StandardCharsets.UTF_8);
+        }
     }
 
     /** Reads a UTF-8 resource bundled in this plugin's jar into a String. */

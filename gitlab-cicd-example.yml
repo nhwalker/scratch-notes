@@ -128,6 +128,84 @@ checkstyle:
       codequality: gl-code-quality-report.json
 
 # -----------------------------------------------------------------------------
+# SpotBugs + FindSecBugs -> GitLab Code Quality.
+# SpotBugs runs advisory (the plugin sets ignoreFailures = true), so it always
+# produces reports rather than failing the job. We keep the HTML/XML/SARIF
+# reports as artifacts and convert the SpotBugs XML to CodeClimate JSON for the
+# MR widget. GitLab merges this codequality report with the Checkstyle one.
+# (SpotBugs gives each finding a stable instanceHash, which we use as the
+# fingerprint; security findings are surfaced at >= major severity.)
+# -----------------------------------------------------------------------------
+spotbugs:
+  stage: quality
+  needs: []
+  script:
+    - ./gradlew $GRADLE_FLAGS spotbugsMain spotbugsTest
+  after_script:
+    - |
+      if ! command -v python3 >/dev/null 2>&1; then
+        apt-get update -qq && apt-get install -y -qq python3
+      fi
+      python3 - <<'PY'
+      import glob, json, os
+      import xml.etree.ElementTree as ET
+
+      project_dir = os.environ.get("CI_PROJECT_DIR", os.getcwd())
+
+      def severity_for(rank, category):
+          try:
+              rank = int(rank)
+          except (TypeError, ValueError):
+              rank = 20
+          sev = "critical" if rank <= 4 else "major" if rank <= 9 else "minor" if rank <= 14 else "info"
+          if category == "SECURITY" and sev in ("minor", "info"):
+              sev = "major"  # make FindSecBugs findings stand out
+          return sev
+
+      issues = []
+      for xml_file in glob.glob("build/reports/spotbugs/*.xml"):
+          root = ET.parse(xml_file).getroot()
+          srcdirs = [e.text for e in root.findall("./Project/SrcDir") if e.text]
+          for bug in root.findall("BugInstance"):
+              lines = bug.findall(".//SourceLine")
+              sl = next((s for s in lines if s.get("primary") == "true" and s.get("start")), None) \
+                  or next((s for s in lines if s.get("start")), None)
+              if sl is None:
+                  continue
+              sourcepath = sl.get("sourcepath", "")
+              # SpotBugs sourcepath is package-relative; resolve against the source
+              # roots it recorded, then make it repo-relative for GitLab.
+              path = sourcepath
+              for d in srcdirs:
+                  cand = os.path.join(d, sourcepath)
+                  if os.path.exists(cand):
+                      path = os.path.relpath(cand, project_dir)
+                      break
+              lm = bug.find("LongMessage")
+              desc = lm.text if lm is not None and lm.text else bug.get("type", "SpotBugs finding")
+              issues.append({
+                  "description": desc,
+                  "check_name": bug.get("type"),
+                  "categories": [bug.get("category", "BUG")],
+                  "fingerprint": bug.get("instanceHash") or f"{path}:{sl.get('start')}:{bug.get('type')}",
+                  "severity": severity_for(bug.get("rank"), bug.get("category")),
+                  "location": {"path": path, "lines": {"begin": int(sl.get("start", "1"))}},
+              })
+
+      with open("gl-code-quality-report.json", "w") as out:
+          json.dump(issues, out, indent=2)
+      print(f"Wrote {len(issues)} SpotBugs issue(s) to gl-code-quality-report.json")
+      PY
+  artifacts:
+    when: always
+    expire_in: 1 week
+    paths:
+      # Browsable HTML + machine-readable XML + SARIF (e.g. for other tools).
+      - build/reports/spotbugs/
+    reports:
+      codequality: gl-code-quality-report.json
+
+# -----------------------------------------------------------------------------
 # Spotless: formatting gate. No structured GitLab report exists for it.
 # If this fails, the fix is to run `./gradlew spotlessApply` locally and commit.
 # spotlessCheck prints exactly which files differ in the job log.

@@ -28,6 +28,12 @@ dependencies {
     // Error Prone, NullAway and JSpecify artifacts are added to the *consumer's*
     // configurations at apply time, not here.
     implementation 'net.ltgt.gradle:gradle-errorprone-plugin:5.1.0'
+
+    // The SpotBugs Gradle plugin. Puts the `com.github.spotbugs` plugin id and the
+    // typed SpotBugsExtension/SpotBugsTask API on our classpath. The SpotBugs tool
+    // and the FindSecBugs plugin are added to the consumer's spotbugs configurations
+    // at apply time, not here.
+    implementation 'com.github.spotbugs.snom:spotbugs-gradle-plugin:6.5.8'
 }
 
 gradlePlugin {

@@ -28,6 +28,16 @@
         <property name="fileNamePattern" value="[/\\]build[/\\]"/>
     </module>
 
+    <!-- Test method names are unconstrained: tests commonly use descriptive,
+         underscore-y names (should_do_x_when_y, givenX_whenY_thenZ). Relax
+         MethodName for the whole test source set (src/test); main code stays
+         strict. (To instead target test classes by name, set files to e.g.
+         ".*(Test|Tests|IT|TestCase)\.java$".) -->
+    <module name="SuppressionSingleFilter">
+        <property name="checks" value="MethodName"/>
+        <property name="files" value="[/\\]src[/\\]test[/\\]"/>
+    </module>
+
     <module name="TreeWalker">
         <module name="SuppressWarningsHolder"/>
 

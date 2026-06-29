@@ -22,8 +22,9 @@ A small Gradle plugin (Java) that standardizes code formatting. Applying it:
   default, …), design (final/utility classes), `@Override`, etc. — while
   **leaving all formatting to Spotless** (no whitespace/indent/wrapping/brace-
   placement rules). The config ships inside the plugin jar, so consumers don't
-  need their own `checkstyle.xml`. Suppress locally with
-  `@SuppressWarnings("checkstyle:<id>")`;
+  need their own `checkstyle.xml`. Method-name checking is relaxed for the test
+  source set (`src/test`), so descriptive test method names (`should_do_x_when_y`)
+  are allowed. Suppress locally with `@SuppressWarnings("checkstyle:<id>")`;
 - applies **Error Prone** (5.1.0 plugin / `error_prone_core` 2.50.0) with **NullAway**
   (0.13.7) for compile-time null-safety, gated on the `java` plugin. NullAway uses the
   *opt-out* model: every package this module has source for is checked (the package

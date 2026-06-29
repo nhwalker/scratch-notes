@@ -1,17 +1,31 @@
 # =============================================================================
-# Example GitLab CI/CD pipeline for a project that applies `my-style-plugin`.
+# Example GitLab CI/CD pipeline for a MULTI-PROJECT Gradle build whose
+# subprojects are separate Java libraries, each applying `my-style-plugin`
+# (e.g. via a `subprojects {}` block or a convention plugin in the root build).
 #
-# Copy this to `.gitlab-ci.yml` in a consumer project. The plugin contributes
-# the tasks used below:
+# Copy this to `.gitlab-ci.yml` at the repo root. The plugin contributes the
+# tasks used below:
 #   - spotlessCheck                  (formatting: Palantir + license header)
 #   - checkstyleMain / checkstyleTest (good-practice rules)
 #   - compileJava / compileTestJava  (Error Prone + NullAway run inside javac)
 #   - test                           (your unit tests)
 #
+# Multi-project notes:
+#   * Running a task by simple name (e.g. `./gradlew test`) executes it in EVERY
+#     subproject that has it, so the root-level invocations below fan out across
+#     all the library modules. Subprojects without the task (or the root
+#     aggregator) are simply skipped.
+#   * Each subproject writes its reports under `<subproject>/build/...`, not the
+#     root `build/`. So every report glob, artifact path and JUnit path below
+#     uses `**/build/...` to collect from all modules, and the Code Quality
+#     converters glob recursively and aggregate every module's findings into one
+#     report per job. Paths are made relative to CI_PROJECT_DIR (the repo root =
+#     the Gradle root dir), so a finding renders as `moduleA/src/main/java/...`.
+#
 # GitLab-native reports are produced "where appropriate":
-#   - Checkstyle violations -> Code Quality report (shown in the MR widget and
-#     the "Code Quality" tab) by converting Checkstyle XML to the CodeClimate
-#     JSON format GitLab expects.
+#   - Checkstyle and SpotBugs/FindSecBugs -> Code Quality reports (MR widget +
+#     inline diff annotations) by converting each tool's XML to the CodeClimate
+#     JSON GitLab expects. GitLab merges the two reports.
 #   - Tests -> JUnit report (shown in the MR widget and "Tests" tab).
 #
 # Spotless and Error Prone/NullAway are pass/fail compiler-style gates with no
@@ -66,8 +80,9 @@ compile (errorprone + nullaway):
 
 # -----------------------------------------------------------------------------
 # Checkstyle -> GitLab Code Quality.
-# Checkstyle always writes build/reports/checkstyle/*.xml (even when it fails on
-# violations), so we convert that to the CodeClimate JSON GitLab ingests. The
+# `checkstyleMain`/`checkstyleTest` fan out to every module. Each writes
+# <module>/build/reports/checkstyle/*.xml (even when it fails on violations), so
+# we glob those recursively and convert them to one CodeClimate JSON. The
 # conversion runs in after_script so it happens whether or not the task passed,
 # and artifacts are uploaded `when: always` so the report still appears on a
 # red pipeline (that's how reviewers see the violations in the MR).
@@ -93,8 +108,11 @@ checkstyle:
       severity = {"error": "major", "warning": "minor", "info": "info", "ignore": "info"}
 
       issues = []
-      for xml_file in glob.glob("build/reports/checkstyle/*.xml"):
+      # Recursive glob collects every module's report (and the single-project case).
+      for xml_file in glob.glob("**/build/reports/checkstyle/*.xml", recursive=True):
           for file_el in ET.parse(xml_file).getroot().findall("file"):
+              # <file name> is absolute; relativize to the repo root so the path
+              # renders as e.g. moduleA/src/main/java/...
               path = os.path.relpath(file_el.get("name"), project_dir)
               for err in file_el.findall("error"):
                   line = int(err.get("line", "1"))
@@ -103,6 +121,8 @@ checkstyle:
                   if check.endswith("Check"):
                       check = check[:-5]
                   message = err.get("message", check)
+                  # Path is in the fingerprint, so identical findings in different
+                  # modules stay distinct.
                   fingerprint = hashlib.sha256(
                       f"{path}:{line}:{source}:{message}".encode()
                   ).hexdigest()
@@ -122,19 +142,21 @@ checkstyle:
     when: always
     expire_in: 1 week
     paths:
-      # Browsable HTML/XML reports attached to the job.
-      - build/reports/checkstyle/
+      # Browsable HTML/XML reports from every module.
+      - "**/build/reports/checkstyle/"
     reports:
       codequality: gl-code-quality-report.json
 
 # -----------------------------------------------------------------------------
 # SpotBugs + FindSecBugs -> GitLab Code Quality.
 # SpotBugs runs advisory (the plugin sets ignoreFailures = true), so it always
-# produces reports rather than failing the job. We keep the HTML/XML/SARIF
-# reports as artifacts and convert the SpotBugs XML to CodeClimate JSON for the
-# MR widget. GitLab merges this codequality report with the Checkstyle one.
-# (SpotBugs gives each finding a stable instanceHash, which we use as the
-# fingerprint; security findings are surfaced at >= major severity.)
+# produces reports rather than failing the job. `spotbugsMain`/`spotbugsTest`
+# fan out to every module; we glob <module>/build/reports/spotbugs/*.xml
+# recursively, keep the HTML/XML/SARIF as artifacts, and convert to CodeClimate
+# JSON for the MR widget. GitLab merges this report with the Checkstyle one.
+# (SpotBugs gives each finding a stable instanceHash; we prefix it with the file
+# path so the fingerprint stays unique across modules. Security findings are
+# surfaced at >= major severity.)
 # -----------------------------------------------------------------------------
 spotbugs:
   stage: quality
@@ -163,7 +185,8 @@ spotbugs:
           return sev
 
       issues = []
-      for xml_file in glob.glob("build/reports/spotbugs/*.xml"):
+      # Recursive glob collects every module's report (and the single-project case).
+      for xml_file in glob.glob("**/build/reports/spotbugs/*.xml", recursive=True):
           root = ET.parse(xml_file).getroot()
           srcdirs = [e.text for e in root.findall("./Project/SrcDir") if e.text]
           for bug in root.findall("BugInstance"):
@@ -174,7 +197,7 @@ spotbugs:
                   continue
               sourcepath = sl.get("sourcepath", "")
               # SpotBugs sourcepath is package-relative; resolve against the source
-              # roots it recorded, then make it repo-relative for GitLab.
+              # roots it recorded (per module), then make it repo-relative.
               path = sourcepath
               for d in srcdirs:
                   cand = os.path.join(d, sourcepath)
@@ -183,11 +206,13 @@ spotbugs:
                       break
               lm = bug.find("LongMessage")
               desc = lm.text if lm is not None and lm.text else bug.get("type", "SpotBugs finding")
+              instance = bug.get("instanceHash") or f"{sl.get('start')}:{bug.get('type')}"
               issues.append({
                   "description": desc,
                   "check_name": bug.get("type"),
                   "categories": [bug.get("category", "BUG")],
-                  "fingerprint": bug.get("instanceHash") or f"{path}:{sl.get('start')}:{bug.get('type')}",
+                  # Prefix with path so identical findings in different modules differ.
+                  "fingerprint": f"{path}:{instance}",
                   "severity": severity_for(bug.get("rank"), bug.get("category")),
                   "location": {"path": path, "lines": {"begin": int(sl.get("start", "1"))}},
               })
@@ -200,8 +225,8 @@ spotbugs:
     when: always
     expire_in: 1 week
     paths:
-      # Browsable HTML + machine-readable XML + SARIF (e.g. for other tools).
-      - build/reports/spotbugs/
+      # Browsable HTML + machine-readable XML + SARIF from every module.
+      - "**/build/reports/spotbugs/"
     reports:
       codequality: gl-code-quality-report.json
 
@@ -224,6 +249,7 @@ spotless:
 
 # -----------------------------------------------------------------------------
 # Unit tests -> GitLab JUnit report (MR widget + "Tests" tab).
+# `test` fans out to every module; collect each module's results recursively.
 # -----------------------------------------------------------------------------
 test:
   stage: test
@@ -234,7 +260,7 @@ test:
     when: always
     expire_in: 1 week
     paths:
-      - build/reports/tests/
+      - "**/build/reports/tests/"
     reports:
       junit:
-        - build/test-results/test/**/TEST-*.xml
+        - "**/build/test-results/test/**/TEST-*.xml"

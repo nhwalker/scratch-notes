@@ -97,3 +97,10 @@ these checks and exposes GitLab-native reports where they exist — Checkstyle a
 annotations, converted from each tool's XML; GitLab merges them) and tests as a
 **JUnit** report. Spotless, Error Prone/NullAway and `-Xlint` are pass/fail gates
 (details in the job log). Copy it to `.gitlab-ci.yml` to use it.
+
+It is written for a **multi-project build** whose subprojects are separate Java
+libraries: the task invocations fan out to every module, and the report globs,
+artifact paths and converters collect from `**/build/...` across all modules
+(aggregating each Code Quality report into one per job, with module-prefixed
+paths like `moduleA/src/main/java/...`). It works unchanged for a single-project
+build too.

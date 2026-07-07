@@ -1,0 +1,179 @@
+# =============================================================================
+# Example GitLab CI/CD pipeline for a MULTI-PROJECT Gradle build whose
+# subprojects are separate Java libraries, each applying `my-style-plugin`
+# (e.g. via a `subprojects {}` block or a convention plugin in the root build).
+#
+# Copy TWO files to the repo root: this file as `.gitlab-ci.yml`, and its
+# companion `gitlab-report-formats.py` (the Checkstyle/SpotBugs jobs call it to
+# produce the Code Quality reports). The plugin contributes the tasks used below:
+#   - spotlessCheck                  (formatting: Palantir + license header)
+#   - checkstyleMain / checkstyleTest (good-practice rules)
+#   - compileJava / compileTestJava  (Error Prone + NullAway run inside javac)
+#   - test                           (your unit tests)
+#
+# Multi-project notes:
+#   * Running a task by simple name (e.g. `./gradlew test`) executes it in EVERY
+#     subproject that has it, so the root-level invocations below fan out across
+#     all the library modules. Subprojects without the task (or the root
+#     aggregator) are simply skipped.
+#   * Each subproject writes its reports under `<subproject>/build/...`, not the
+#     root `build/`. So every report glob, artifact path and JUnit path below
+#     uses `**/build/...` to collect from all modules, and the Code Quality
+#     converters glob recursively and aggregate every module's findings into one
+#     report per job. Paths are made relative to CI_PROJECT_DIR (the repo root =
+#     the Gradle root dir), so a finding renders as `moduleA/src/main/java/...`.
+#
+# GitLab-native reports are produced "where appropriate":
+#   - Checkstyle and SpotBugs/FindSecBugs -> Code Quality reports (MR widget +
+#     inline diff annotations) by converting each tool's XML to the CodeClimate
+#     JSON GitLab expects. GitLab merges the two reports.
+#   - Tests -> JUnit report (shown in the MR widget and "Tests" tab).
+#
+# Spotless and Error Prone/NullAway are pass/fail compiler-style gates with no
+# structured GitLab report format; when they fail, the details are in the job
+# log and the pipeline goes red. See the comments on those jobs.
+# =============================================================================
+
+# Run one pipeline per change: on merge requests, on branches without an open
+# MR, and on tags. Avoids duplicate "branch + MR" pipelines.
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS == null'
+    - if: '$CI_COMMIT_TAG'
+
+stages:
+  - build
+  - quality
+  - test
+
+default:
+  # JDK 21 — required by the plugin (Gradle 9.2.1 runs on a Java 17+ daemon,
+  # and Error Prone/NullAway are happy on 21).
+  image: eclipse-temurin:21-jdk
+  # Cache the Gradle wrapper distribution and the dependency cache per branch so
+  # Error Prone, NullAway, Checkstyle and JSpecify aren't re-downloaded each run.
+  cache:
+    key: "$CI_COMMIT_REF_SLUG"
+    paths:
+      - .gradle/wrapper
+      - .gradle/caches
+  before_script:
+    - chmod +x ./gradlew
+
+variables:
+  # Keep the Gradle home inside the workspace so the cache: paths above apply.
+  GRADLE_USER_HOME: "$CI_PROJECT_DIR/.gradle"
+  # No daemon in CI; turn on the build cache for faster incremental jobs.
+  GRADLE_OPTS: "-Dorg.gradle.daemon=false"
+  GRADLE_FLAGS: "--build-cache --console=plain --stacktrace"
+
+# -----------------------------------------------------------------------------
+# Error Prone + NullAway run as part of compilation. Compiling main AND test
+# sources here makes both null-safety and the Error Prone checks a hard gate.
+# There is no structured GitLab report for compiler diagnostics: a violation
+# fails this job and the offending file/line is printed in the job log.
+# -----------------------------------------------------------------------------
+compile (errorprone + nullaway):
+  stage: build
+  script:
+    - ./gradlew $GRADLE_FLAGS classes testClasses
+
+# -----------------------------------------------------------------------------
+# Checkstyle -> GitLab Code Quality.
+# `checkstyleMain`/`checkstyleTest` fan out to every module. Each writes
+# <module>/build/reports/checkstyle/*.xml (even when it fails on violations), so
+# we glob those recursively and convert them to one CodeClimate JSON. The
+# conversion runs in after_script so it happens whether or not the task passed,
+# and artifacts are uploaded `when: always` so the report still appears on a
+# red pipeline (that's how reviewers see the violations in the MR).
+# -----------------------------------------------------------------------------
+checkstyle:
+  stage: quality
+  needs: []
+  script:
+    - ./gradlew $GRADLE_FLAGS checkstyleMain checkstyleTest
+  after_script:
+    # Convert Checkstyle XML -> CodeClimate JSON via the companion script (runs in
+    # after_script so it happens even when checkstyle fails on violations). python3
+    # is only needed for this; install it if the image lacks it (or bake it in).
+    - |
+      if ! command -v python3 >/dev/null 2>&1; then
+        apt-get update -qq && apt-get install -y -qq python3
+      fi
+      python3 gitlab-report-formats.py checkstyle
+  artifacts:
+    when: always
+    expire_in: 1 week
+    paths:
+      # Browsable HTML/XML reports from every module.
+      - "**/build/reports/checkstyle/"
+    reports:
+      codequality: gl-code-quality-report.json
+
+# -----------------------------------------------------------------------------
+# SpotBugs + FindSecBugs -> GitLab Code Quality.
+# SpotBugs runs advisory (the plugin sets ignoreFailures = true), so it always
+# produces reports rather than failing the job. `spotbugsMain`/`spotbugsTest`
+# fan out to every module; we glob <module>/build/reports/spotbugs/*.xml
+# recursively, keep the HTML/XML/SARIF as artifacts, and convert to CodeClimate
+# JSON for the MR widget. GitLab merges this report with the Checkstyle one.
+# (SpotBugs gives each finding a stable instanceHash; we prefix it with the file
+# path so the fingerprint stays unique across modules. Security findings are
+# surfaced at >= major severity.)
+# -----------------------------------------------------------------------------
+spotbugs:
+  stage: quality
+  needs: []
+  script:
+    - ./gradlew $GRADLE_FLAGS spotbugsMain spotbugsTest
+  after_script:
+    # Convert SpotBugs XML -> CodeClimate JSON via the companion script.
+    - |
+      if ! command -v python3 >/dev/null 2>&1; then
+        apt-get update -qq && apt-get install -y -qq python3
+      fi
+      python3 gitlab-report-formats.py spotbugs
+  artifacts:
+    when: always
+    expire_in: 1 week
+    paths:
+      # Browsable HTML + machine-readable XML + SARIF from every module.
+      - "**/build/reports/spotbugs/"
+    reports:
+      codequality: gl-code-quality-report.json
+
+# -----------------------------------------------------------------------------
+# Spotless: formatting gate. No structured GitLab report exists for it.
+# If this fails, the fix is to run `./gradlew spotlessApply` locally and commit.
+# spotlessCheck prints exactly which files differ in the job log.
+# -----------------------------------------------------------------------------
+spotless:
+  stage: quality
+  needs: []
+  script:
+    - ./gradlew $GRADLE_FLAGS spotlessCheck
+  # Make the remediation obvious in the log when the job fails.
+  after_script:
+    - >
+      if [ "$CI_JOB_STATUS" = "failed" ]; then
+        echo "Formatting check failed. Run './gradlew spotlessApply' locally and commit the result.";
+      fi
+
+# -----------------------------------------------------------------------------
+# Unit tests -> GitLab JUnit report (MR widget + "Tests" tab).
+# `test` fans out to every module; collect each module's results recursively.
+# -----------------------------------------------------------------------------
+test:
+  stage: test
+  needs: ["compile (errorprone + nullaway)"]
+  script:
+    - ./gradlew $GRADLE_FLAGS test
+  artifacts:
+    when: always
+    expire_in: 1 week
+    paths:
+      - "**/build/reports/tests/"
+    reports:
+      junit:
+        - "**/build/test-results/test/**/TEST-*.xml"

@@ -1,0 +1,50 @@
+plugins {
+    id 'java-gradle-plugin'
+}
+
+group = 'io.github.nhwalker'
+version = '0.1.0'
+
+repositories {
+    gradlePluginPortal()
+    mavenCentral()
+}
+
+java {
+    // Compile to Java 17 bytecode so the plugin works on every Gradle 9.x
+    // runtime (Gradle 9 requires a Java 17+ daemon).
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}
+
+dependencies {
+    // The Spotless Gradle plugin. Declaring it here puts its classes on the
+    // plugin's runtime classpath so MyStylePlugin can both apply the
+    // plugin by id and configure its extension with the typed Java API.
+    implementation 'com.diffplug.spotless:spotless-plugin-gradle:8.7.0'
+
+    // The Error Prone Gradle plugin. Puts the `net.ltgt.errorprone` plugin id and
+    // the typed ErrorProneOptions/CheckSeverity API on our classpath. The actual
+    // Error Prone, NullAway and JSpecify artifacts are added to the *consumer's*
+    // configurations at apply time, not here.
+    implementation 'net.ltgt.gradle:gradle-errorprone-plugin:5.1.0'
+
+    // The SpotBugs Gradle plugin. Puts the `com.github.spotbugs` plugin id and the
+    // typed SpotBugsExtension/SpotBugsTask API on our classpath. The SpotBugs tool
+    // and the FindSecBugs plugin are added to the consumer's spotbugs configurations
+    // at apply time, not here.
+    implementation 'com.github.spotbugs.snom:spotbugs-gradle-plugin:6.5.8'
+}
+
+gradlePlugin {
+    plugins {
+        myStyle {
+            id = 'my-style-plugin'
+            implementationClass = 'io.github.nhwalker.mystyle.MyStylePlugin'
+            displayName = 'My Style Plugin'
+            description = 'Applies and configures Spotless with the Palantir Java ' +
+                'formatter and a license header, and tightens the Eclipse JDT ' +
+                'compiler warnings when the eclipse plugin is present.'
+        }
+    }
+}

@@ -1,0 +1,137 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE module PUBLIC
+    "-//Checkstyle//DTD Checkstyle Configuration 1.3//EN"
+    "https://checkstyle.org/dtds/configuration_1_3.dtd">
+
+<!--
+  my-style-plugin Checkstyle configuration.
+
+  This config enforces good *practices* only. All pure formatting concerns
+  (indentation, whitespace, line wrapping, brace placement, blank lines,
+  import ordering, modifier order, ...) are intentionally NOT configured here
+  because they are owned by Spotless + the Palantir Java formatter. Adding
+  formatting checks here would only create rules that fight the formatter.
+-->
+<module name="Checker">
+    <property name="severity" value="error"/>
+    <property name="charset" value="UTF-8"/>
+    <property name="fileExtensions" value="java"/>
+
+    <!-- Honour @SuppressWarnings("checkstyle:...") (paired with the
+         SuppressWarningsHolder inside TreeWalker below). -->
+    <module name="SuppressWarningsFilter"/>
+
+    <!-- Never check generated code. Some plugins (e.g. protobuf) add their
+         generated output under build/ to the source set, which Checkstyle would
+         otherwise scan. Exclude any file path that contains a build/ segment. -->
+    <module name="BeforeExecutionExclusionFileFilter">
+        <property name="fileNamePattern" value="[/\\]build[/\\]"/>
+    </module>
+
+    <!-- Test method names are unconstrained: tests commonly use descriptive,
+         underscore-y names (should_do_x_when_y, givenX_whenY_thenZ). Relax
+         MethodName for the whole test source set (src/test); main code stays
+         strict. (To instead target test classes by name, set files to e.g.
+         ".*(Test|Tests|IT|TestCase)\.java$".) -->
+    <module name="SuppressionSingleFilter">
+        <property name="checks" value="MethodName"/>
+        <property name="files" value="[/\\]src[/\\]test[/\\]"/>
+    </module>
+
+    <module name="TreeWalker">
+        <module name="SuppressWarningsHolder"/>
+
+        <!-- ============================ Imports ============================ -->
+        <!-- Star imports hide what a file actually depends on. -->
+        <module name="AvoidStarImport"/>
+        <!-- Duplicate / java.lang / same-package imports add noise. -->
+        <module name="RedundantImport"/>
+        <module name="UnusedImports">
+            <property name="processJavadoc" value="true"/>
+        </module>
+        <!-- Forbid sun.* and other implementation-internal packages. -->
+        <module name="IllegalImport"/>
+
+        <!-- ====================== Naming conventions ====================== -->
+        <!-- Conventions the formatter cannot enforce; all use Checkstyle's
+             standard defaults. -->
+        <module name="PackageName"/>
+        <module name="TypeName"/>
+        <module name="MemberName"/>
+        <module name="MethodName"/>
+        <module name="ParameterName"/>
+        <module name="LambdaParameterName"/>
+        <module name="CatchParameterName"/>
+        <module name="LocalVariableName"/>
+        <module name="LocalFinalVariableName"/>
+        <module name="ConstantName"/>
+        <module name="StaticVariableName"/>
+        <module name="PatternVariableName"/>
+        <module name="RecordComponentName"/>
+        <module name="RecordTypeParameterName"/>
+        <module name="ClassTypeParameterName"/>
+        <module name="InterfaceTypeParameterName"/>
+        <module name="MethodTypeParameterName"/>
+
+        <!-- ========================== Coding ============================== -->
+        <module name="CovariantEquals"/>
+        <module name="DefaultComesLast"/>
+        <module name="EmptyCatchBlock">
+            <!-- An empty catch is allowed only when clearly intentional. -->
+            <property name="exceptionVariableName" value="expected|ignored"/>
+        </module>
+        <module name="EmptyStatement"/>
+        <module name="EqualsAvoidNull"/>
+        <module name="EqualsHashCode"/>
+        <module name="ExplicitInitialization"/>
+        <module name="FallThrough"/>
+        <module name="IllegalInstantiation"/>
+        <module name="InnerAssignment"/>
+        <module name="MissingSwitchDefault"/>
+        <module name="MissingNullCaseInSwitch"/>
+        <module name="ModifiedControlVariable"/>
+        <module name="MultipleVariableDeclarations"/>
+        <module name="NestedTryDepth"/>
+        <module name="NoClone"/>
+        <module name="NoFinalizer"/>
+        <module name="OneStatementPerLine"/>
+        <module name="SimplifyBooleanExpression"/>
+        <module name="SimplifyBooleanReturn"/>
+        <module name="StringLiteralEquality"/>
+        <module name="SuperClone"/>
+        <module name="SuperFinalize"/>
+        <module name="UnnecessarySemicolonAfterOuterTypeDeclaration"/>
+        <module name="UnnecessarySemicolonAfterTypeMemberDeclaration"/>
+        <module name="UnnecessarySemicolonInEnumeration"/>
+        <module name="UnnecessarySemicolonInTryWithResources"/>
+        <module name="UnusedLocalVariable"/>
+        <!-- Require braces so an added second statement can't silently fall
+             outside the conditional/loop (a correctness practice, not layout). -->
+        <module name="NeedBraces"/>
+
+        <!-- ========================== Design ============================= -->
+        <module name="FinalClass"/>
+        <module name="HideUtilityClassConstructor"/>
+        <module name="InterfaceIsType"/>
+        <module name="MutableException"/>
+        <module name="OneTopLevelClass"/>
+
+        <!-- ======================== Annotations ========================= -->
+        <module name="MissingOverride"/>
+        <module name="PackageAnnotation"/>
+
+        <!-- ========================= Modifiers ========================== -->
+        <!-- Redundant modifiers (e.g. `public` on interface methods) are a
+             practice issue. Modifier *order* is layout and is left to the
+             formatter. -->
+        <module name="RedundantModifier"/>
+
+        <!-- ====================== Miscellaneous ========================= -->
+        <!-- `String[] args`, not `String args[]`. -->
+        <module name="ArrayTypeStyle"/>
+        <!-- `1L`, not `1l` (lowercase ell reads like a 1). -->
+        <module name="UpperEll"/>
+        <!-- Public top-level type must match the file name. -->
+        <module name="OuterTypeFilename"/>
+    </module>
+</module>

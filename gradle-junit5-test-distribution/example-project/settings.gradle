@@ -1,0 +1,15 @@
+// ---------------------------------------------------------------------------
+// EXAMPLE-ONLY WIRING: the two includeBuild lines resolve the plugin and its
+// runner library from the sibling build in this repo. In real use, publish
+// e2e-distribution-plugin's artifacts to your internal Maven repo / plugin
+// portal and delete both lines — consumers then need nothing but the plugin id.
+// ---------------------------------------------------------------------------
+pluginManagement {
+    includeBuild '../e2e-distribution-plugin'
+}
+
+rootProject.name = 'my-service-e2e'
+
+// Substitutes the plugin-injected com.example.e2e:runner dependency with the
+// sibling build's subproject.
+includeBuild '../e2e-distribution-plugin'

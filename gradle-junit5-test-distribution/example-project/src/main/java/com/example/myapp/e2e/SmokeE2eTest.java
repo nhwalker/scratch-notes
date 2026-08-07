@@ -1,15 +1,16 @@
-package com.example.e2e.tests;
+package com.example.myapp.e2e;
 
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Placeholder e2e tests. Replace these with tests that exercise the real
- * system: HTTP calls, database queries, message bus round-trips, etc.
- * The target system's address arrives via -De2e.target.url at launch time.
+ * Placeholder e2e tests. Replace with tests that exercise the real system:
+ * HTTP calls, database queries, message bus round-trips, etc. The target
+ * system's address arrives via -De2e.target.url at launch time.
  */
 class SmokeE2eTest {
 
@@ -17,6 +18,7 @@ class SmokeE2eTest {
             System.getProperty("e2e.target.url", "http://localhost:8080");
 
     @Test
+    @Tag("smoke")
     @DisplayName("target URL is configured")
     void targetUrlIsConfigured() {
         assertNotNull(targetUrl);

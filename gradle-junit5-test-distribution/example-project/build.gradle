@@ -1,0 +1,37 @@
+// A consumer project: nothing here but tests, an engine choice, and config.
+// The plugin injects the shared launcher, sets the main class, and wires the
+// application/distribution plumbing.
+plugins {
+    id 'com.example.e2e-distribution'
+}
+
+group = 'com.example.myapp'
+version = '1.0.0'
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    // Test engine — version supplied by the junit BOM the runner exports.
+    implementation 'org.junit.jupiter:junit-jupiter'
+
+    // Whatever your e2e tests need to talk to the real system:
+    // implementation 'org.postgresql:postgresql:42.7.3'
+}
+
+application {
+    applicationName = 'e2e-tests'
+    applicationDefaultJvmArgs = ['-Xmx512m']
+}
+
+e2eDistribution {
+    testPackage = 'com.example.myapp.e2e'
+    // Defaults baked into the launch scripts; override at run time with
+    // E2E_TESTS_OPTS="-De2e.target.url=..." bin/e2e-tests
+    systemProperties = ['e2e.target.url': 'http://localhost:8080']
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.release = 17
+}

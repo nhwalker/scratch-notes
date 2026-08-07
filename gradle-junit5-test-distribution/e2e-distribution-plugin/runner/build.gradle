@@ -1,0 +1,27 @@
+// The launcher, written ONCE. Every project that applies the plugin gets
+// this library injected as an implementation dependency — no per-project
+// main class.
+plugins {
+    id 'java-library'
+}
+
+group = 'com.example.e2e'
+version = '1.0.0'
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    // `api platform(...)` exports the BOM's version constraints to consumers,
+    // so projects applying the plugin can declare e.g.
+    // 'org.junit.jupiter:junit-jupiter' with no version.
+    api platform('org.junit:junit-bom:5.10.2')
+
+    implementation 'org.junit.platform:junit-platform-launcher'
+    implementation 'org.junit.platform:junit-platform-reporting'
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.release = 17
+}

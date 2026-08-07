@@ -23,11 +23,6 @@ class IntegrationTestPluginSpec extends Specification {
             repositories {
                 mavenCentral()
             }
-            dependencies {
-                testImplementation platform('org.junit:junit-bom:5.12.2')
-                testImplementation 'org.junit.jupiter:junit-jupiter'
-                testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
-            }
         """.stripIndent()
     }
 
@@ -38,13 +33,15 @@ class IntegrationTestPluginSpec extends Specification {
             .withArguments(args)
     }
 
-    def 'adds the integrationTest source set and task'() {
+    def 'registers an integrationTest suite with its source set and task'() {
         given:
         buildFile << """
             task verifyModel {
-                def names = sourceSets.names
+                def suiteNames = testing.suites.names
+                def sourceSetNames = sourceSets.names
                 doLast {
-                    assert names.contains('integrationTest')
+                    assert suiteNames.contains('integrationTest')
+                    assert sourceSetNames.contains('integrationTest')
                 }
             }
         """.stripIndent()
@@ -57,7 +54,7 @@ class IntegrationTestPluginSpec extends Specification {
         result.task(':integrationTest').outcome == TaskOutcome.NO_SOURCE
     }
 
-    def 'compiles and runs tests from src/integrationTest, seeing main classes and test dependencies'() {
+    def 'compiles and runs suite tests from src/integrationTest against main classes'() {
         given:
         writeSource 'src/main/java/sample/Greeter.java', '''
             package sample;

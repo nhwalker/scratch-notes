@@ -3,65 +3,55 @@ package io.github.nhwalker.gradle
 import org.gradle.api.Plugin
 import org.gradle.api.Project
 import org.gradle.api.plugins.JavaPlugin
-import org.gradle.api.tasks.SourceSet
+import org.gradle.api.plugins.jvm.JvmTestSuite
 import org.gradle.language.base.plugins.LifecycleBasePlugin
-import org.gradle.api.tasks.SourceSetContainer
-import org.gradle.api.tasks.testing.Test
+import org.gradle.testing.base.TestingExtension
 
 /**
- * Adds an {@code integrationTest} source set alongside {@code main} and {@code test}.
+ * Registers an {@code integrationTest} JVM test suite via Gradle's
+ * {@code jvm-test-suite} plugin (the {@code testing} extension).
  *
  * <ul>
  *   <li>Sources live in {@code src/integrationTest/java} (and groovy/kotlin/resources
- *       when those plugins are applied).</li>
- *   <li>{@code integrationTestImplementation} / {@code integrationTestRuntimeOnly}
- *       extend the corresponding {@code test*} configurations, so shared test
- *       dependencies are declared once.</li>
- *   <li>An {@code integrationTest} task of type {@link Test} runs the suite and is
- *       wired into {@code check}, ordered after the unit {@code test} task.</li>
+ *       when those plugins are applied); the suite brings its own source set,
+ *       configurations, and {@code integrationTest} task.</li>
+ *   <li>The suite uses JUnit Jupiter and depends on the project's production
+ *       classes ({@code implementation project()}).</li>
+ *   <li>The suite's test task is ordered after the unit {@code test} task and
+ *       wired into {@code check}.</li>
  * </ul>
+ *
+ * Extra dependencies go on the suite, e.g.
+ * <pre>
+ * testing.suites.integrationTest.dependencies {
+ *     implementation 'org.testcontainers:testcontainers:1.20.4'
+ * }
+ * </pre>
  */
 class IntegrationTestPlugin implements Plugin<Project> {
 
-    public static final String SOURCE_SET_NAME = 'integrationTest'
-    public static final String TASK_NAME = 'integrationTest'
+    public static final String SUITE_NAME = 'integrationTest'
 
     @Override
     void apply(Project project) {
-        project.plugins.withType(JavaPlugin) {
-            configure(project)
-        }
-        // Make sure java is present; applying it twice is a no-op.
+        // The java plugin applies jvm-test-suite; applying it twice is a no-op.
         project.plugins.apply(JavaPlugin)
-    }
 
-    private static void configure(Project project) {
-        SourceSetContainer sourceSets = project.extensions.getByType(SourceSetContainer)
-        SourceSet main = sourceSets.named(SourceSet.MAIN_SOURCE_SET_NAME).get()
-
-        SourceSet integrationTest = sourceSets.create(SOURCE_SET_NAME) {
-            compileClasspath += main.output
-            runtimeClasspath += main.output
+        TestingExtension testing = project.extensions.getByType(TestingExtension)
+        def suite = testing.suites.register(SUITE_NAME, JvmTestSuite) { s ->
+            s.useJUnitJupiter()
+            s.dependencies { deps ->
+                deps.implementation(deps.project())
+            }
+            s.targets.all { target ->
+                target.testTask.configure { t ->
+                    t.shouldRunAfter(project.tasks.named(JavaPlugin.TEST_TASK_NAME))
+                }
+            }
         }
 
-        project.configurations.named(integrationTest.implementationConfigurationName) {
-            extendsFrom project.configurations.getByName(JavaPlugin.TEST_IMPLEMENTATION_CONFIGURATION_NAME)
-        }
-        project.configurations.named(integrationTest.runtimeOnlyConfigurationName) {
-            extendsFrom project.configurations.getByName(JavaPlugin.TEST_RUNTIME_ONLY_CONFIGURATION_NAME)
-        }
-
-        def integrationTestTask = project.tasks.register(TASK_NAME, Test) {
-            description = 'Runs the integration tests.'
-            group = LifecycleBasePlugin.VERIFICATION_GROUP
-            testClassesDirs = integrationTest.output.classesDirs
-            classpath = integrationTest.runtimeClasspath
-            useJUnitPlatform()
-            shouldRunAfter project.tasks.named(JavaPlugin.TEST_TASK_NAME)
-        }
-
-        project.tasks.named('check') {
-            dependsOn integrationTestTask
+        project.tasks.named(LifecycleBasePlugin.CHECK_TASK_NAME) { t ->
+            t.dependsOn(suite)
         }
     }
 }

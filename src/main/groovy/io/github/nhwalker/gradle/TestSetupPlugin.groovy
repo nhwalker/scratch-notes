@@ -23,6 +23,9 @@ import org.gradle.testing.jacoco.tasks.JacocoReport
  *       {@code jacocoIntegrationTestReport} task mirrors the built-in {@code jacocoTestReport}.</li>
  *   <li>Applies the Allure adapter — both suites write Allure raw results, exposed to
  *       aggregating projects via the {@code allureRawResultElements} variant.</li>
+ *   <li>Labels every suite's tests with an Allure {@code parentSuite}: {@code UnitTest}
+ *       for the default {@code test} suite, the capitalized suite name otherwise
+ *       (e.g. {@code IntegrationTest}).</li>
  * </ul>
  *
  * Projects applying this plugin are picked up automatically by the rollup plugin
@@ -33,6 +36,9 @@ class TestSetupPlugin implements Plugin<Project> {
     public static final String INTEGRATION_TEST_SUITE_NAME = 'integrationTest'
     public static final String JACOCO_INTEGRATION_TEST_REPORT_TASK_NAME = 'jacocoIntegrationTestReport'
     public static final String ALLURE_ADAPTER_PLUGIN_ID = 'io.qameta.allure-adapter'
+
+    /** allure-java applies any {@code allure.label.<name>} system property as a label on every test. */
+    public static final String ALLURE_PARENT_SUITE_PROPERTY = 'allure.label.parentSuite'
 
     @Override
     void apply(Project project) {
@@ -60,6 +66,18 @@ class TestSetupPlugin implements Plugin<Project> {
 
         project.tasks.named(LifecycleBasePlugin.CHECK_TASK_NAME) { t ->
             t.dependsOn(integrationTest)
+        }
+
+        // Group tests in the Allure report by suite: a parentSuite label of
+        // 'UnitTest' for the default suite, the capitalized suite name otherwise.
+        // Applies to every JVM test suite, including ones consumers add later.
+        testing.suites.withType(JvmTestSuite).configureEach { s ->
+            String parentSuite = s.name == JavaPlugin.TEST_TASK_NAME ? 'UnitTest' : s.name.capitalize()
+            s.targets.all { target ->
+                target.testTask.configure { t ->
+                    t.systemProperty(ALLURE_PARENT_SUITE_PROPERTY, parentSuite)
+                }
+            }
         }
 
         project.tasks.register(JACOCO_INTEGRATION_TEST_REPORT_TASK_NAME, JacocoReport) { r ->

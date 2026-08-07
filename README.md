@@ -24,6 +24,10 @@ Applying `io.github.nhwalker.test-setup` to a project:
   `jacocoIntegrationTestReport` generate per-project coverage reports.
 - Applies the [Allure adapter](https://github.com/allure-framework/allure-gradle) —
   both suites write Allure raw results.
+- Labels every suite's tests with an Allure `parentSuite`, so the report groups
+  by suite: `UnitTest` for the default `test` suite, the capitalized suite name
+  otherwise (`integrationTest` → `IntegrationTest`, including suites you add
+  yourself).
 
 ```groovy
 plugins {

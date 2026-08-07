@@ -84,6 +84,12 @@ class TestSetupPluginSpec extends Specification {
         !allureResults.isEmpty()
         allureResults.any { it.text.contains('GreeterTest') }
         allureResults.any { it.text.contains('GreeterIT') }
+
+        and: 'each suite labels its tests with the right parentSuite'
+        def unitResult = allureResults.find { it.text.contains('GreeterTest') }
+        def integrationResult = allureResults.find { it.text.contains('GreeterIT') }
+        parentSuiteOf(unitResult) == 'UnitTest'
+        parentSuiteOf(integrationResult) == 'IntegrationTest'
     }
 
     def 'check depends on integrationTest and runs it after test'() {
@@ -127,6 +133,11 @@ class TestSetupPluginSpec extends Specification {
                 }
             }
         '''
+    }
+
+    private static String parentSuiteOf(File resultJson) {
+        def labels = new groovy.json.JsonSlurper().parse(resultJson).labels
+        labels.find { it.name == 'parentSuite' }?.value
     }
 
     private List<File> findAllureResultFiles() {

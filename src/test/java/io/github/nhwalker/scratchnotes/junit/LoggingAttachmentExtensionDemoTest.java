@@ -45,8 +45,8 @@ class LoggingAttachmentExtensionDemoTest {
     Path simpleLog = dir.resolve("simpleTest_0.log");
     assertTrue(Files.exists(simpleLog), "missing " + simpleLog);
     String simpleContent = Files.readString(simpleLog);
-    assertTrue(simpleContent.contains("[STD] OUT-MARKER-simple"), "prefixed stdout marker not captured");
-    assertTrue(simpleContent.contains("[ERR] ERR-MARKER-simple"), "prefixed stderr marker not captured");
+    assertTrue(simpleContent.contains("[_] OUT-MARKER-simple"), "prefixed stdout marker not captured");
+    assertTrue(simpleContent.contains("[E] ERR-MARKER-simple"), "prefixed stderr marker not captured");
 
     // Each parameterized invocation gets its own indexed file.
     assertTrue(Files.exists(dir.resolve("paramTest_0.log")), "missing paramTest_0.log");
@@ -54,8 +54,8 @@ class LoggingAttachmentExtensionDemoTest {
 
     // A stream interleaving into another stream's unterminated line must break
     // the line and start its own tagged line: stdout left "no-newline-out"
-    // open, so "err-after" must appear on an [ERR]-tagged line of its own,
-    // never appended to the open [STD] line.
+    // open, so "err-after" must appear on an [E]-tagged line of its own,
+    // never appended to the open [_] line.
     Path interleaveLog = dir.resolve("interleaveTest_0.log");
     assertTrue(Files.exists(interleaveLog), "missing " + interleaveLog);
     boolean sawOut = false;
@@ -63,12 +63,12 @@ class LoggingAttachmentExtensionDemoTest {
     for (String line : Files.readAllLines(interleaveLog)) {
       if (line.contains("no-newline-out")) {
         sawOut = true;
-        assertTrue(line.startsWith("[STD] "), "stdout text on non-[STD] line: " + line);
+        assertTrue(line.startsWith("[_] "), "stdout text on non-[_] line: " + line);
         assertTrue(!line.contains("err-after"), "streams merged on one line: " + line);
       }
       if (line.contains("err-after")) {
         sawErr = true;
-        assertTrue(line.startsWith("[ERR] "), "stderr text on non-[ERR] line: " + line);
+        assertTrue(line.startsWith("[E] "), "stderr text on non-[E] line: " + line);
       }
     }
     assertTrue(sawOut, "stdout text missing from interleave log");
@@ -79,7 +79,7 @@ class LoggingAttachmentExtensionDemoTest {
       for (Path log : files.toList()) {
         for (String line : Files.readAllLines(log)) {
           if (!line.isBlank()) {
-            assertTrue(line.startsWith("[STD] ") || line.startsWith("[ERR] "),
+            assertTrue(line.startsWith("[_] ") || line.startsWith("[E] "),
                 "unprefixed line in " + log.getFileName() + ": " + line);
           }
         }

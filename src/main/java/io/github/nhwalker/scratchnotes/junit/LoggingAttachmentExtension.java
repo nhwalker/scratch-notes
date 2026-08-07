@@ -40,13 +40,13 @@ import org.junit.jupiter.api.extension.ExtensionContext.Namespace;
  * the index starts at 0 and increments for each invocation of the same method
  * (so parameterized and repeated tests get unique file names). Both stdout and
  * stderr are interleaved into the same file, and every line in the file is
- * prefixed with {@code [STD] } or {@code [ERR] } identifying its source
- * stream; console output carries no prefixes. Every file line is
+ * prefixed with {@code [_] } (stdout) or {@code [E] } (stderr) identifying its
+ * source stream; console output carries no prefixes. Every file line is
  * single-source: if one stream leaves a line unterminated and the other
  * stream writes next, the open line is broken with a newline and the new
  * stream starts its own tagged line. (One cosmetic consequence under parallel
  * interleaving: a println's text and its newline arrive separately, so an
- * orphaned newline can produce an empty tagged line.)
+ * orphaned newline can produce a tagged line with no content.)
  *
  * <p><b>Threading model:</b> a single daemon writer thread owns all capture
  * state and all file I/O. Printing threads pass output through to the original
@@ -85,8 +85,8 @@ public final class LoggingAttachmentExtension implements BeforeEachCallback, Aft
 
   /** Identifies which console stream produced a chunk, and owns its file tag. */
   private enum Source {
-    STD("[STD] "),
-    ERR("[ERR] ");
+    STD("[_] "),
+    ERR("[E] ");
 
     // Tags are pure ASCII, so these bytes are valid in any console charset.
     final byte[] prefix;

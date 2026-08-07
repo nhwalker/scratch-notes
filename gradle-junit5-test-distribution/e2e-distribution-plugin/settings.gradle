@@ -1,0 +1,8 @@
+// The reusable half of the solution. In real life this build lives in its
+// own repository and publishes two artifacts to your internal repo:
+//   com.example.e2e:plugin  (the Gradle plugin)
+//   com.example.e2e:runner  (the shared launcher library the plugin injects)
+rootProject.name = 'e2e-distribution'
+
+include 'plugin'
+include 'runner'

@@ -1,0 +1,23 @@
+plugins {
+    id 'java-gradle-plugin'
+}
+
+group = 'com.example.e2e'
+version = '1.0.0'
+
+repositories {
+    mavenCentral()
+}
+
+gradlePlugin {
+    plugins {
+        e2eDistribution {
+            id = 'com.example.e2e-distribution'
+            implementationClass = 'com.example.e2e.gradle.E2eDistributionPlugin'
+        }
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.release = 17
+}

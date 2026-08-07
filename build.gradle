@@ -19,8 +19,6 @@ repositories {
 
 dependencies {
     implementation 'io.qameta.allure-adapter:io.qameta.allure-adapter.gradle.plugin:4.1.0'
-    implementation 'io.qameta.allure-report:io.qameta.allure-report.gradle.plugin:4.1.0'
-    implementation 'io.qameta.allure-aggregate-report:io.qameta.allure-aggregate-report.gradle.plugin:4.1.0'
 }
 
 gradlePlugin {

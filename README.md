@@ -67,13 +67,28 @@ wiring. The plugin registers:
 | `integrationTestAggregateReport` | merged integration-test HTML report (`build/reports/tests/integrationTest/aggregated-results`) |
 | `testCodeCoverageReport` | merged unit-test JaCoCo report (`build/reports/jacoco/testCodeCoverageReport`) |
 | `integrationTestCodeCoverageReport` | merged integration-test JaCoCo report (`build/reports/jacoco/integrationTestCodeCoverageReport`) |
-| `allureAggregateReport` | merged Allure report (`build/reports/allure-report/allureAggregateReport`) |
+| `allureCollectResults` | Allure raw results, one subdirectory per project (`build/allure-results/<project>/`) |
 | `testRollup` | lifecycle task that generates all of the above |
 
 ```sh
 ./gradlew testRollup             # run all suites everywhere, generate all reports
 ./gradlew testRollup --continue  # still get reports when some tests fail
 ```
+
+Allure report generation is intentionally left to the Allure CLI — no CLI
+download happens in the build. After `testRollup`, generate or serve the
+report yourself:
+
+```sh
+allure serve build/allure-results/*
+```
+
+The per-project subdirectories keep the same semantics as passing multiple
+results directories to the CLI directly: per-directory metadata files
+(`executor.json`, `environment.properties`, `categories.json`) stay separate
+instead of clobbering each other in a flat merge. Collection rides the Allure
+adapter's `allureRawResultElements` variant, so running `allureCollectResults`
+automatically runs the contributing test tasks first.
 
 Note: participant auto-discovery uses cross-project configuration, the
 standard pattern for aggregation today, but it is incompatible with Gradle's

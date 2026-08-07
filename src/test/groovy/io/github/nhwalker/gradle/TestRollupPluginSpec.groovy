@@ -88,7 +88,7 @@ class TestRollupPluginSpec extends Specification {
         result.task(':integrationTestAggregateReport').outcome == TaskOutcome.SUCCESS
         result.task(':testCodeCoverageReport').outcome == TaskOutcome.SUCCESS
         result.task(':integrationTestCodeCoverageReport').outcome == TaskOutcome.SUCCESS
-        result.task(':allureAggregateReport').outcome == TaskOutcome.SUCCESS
+        result.task(':allureCollectResults').outcome == TaskOutcome.SUCCESS
         result.task(':testRollup').outcome == TaskOutcome.SUCCESS
 
         and: 'merged junit html reports contain tests from both subprojects'
@@ -103,8 +103,13 @@ class TestRollupPluginSpec extends Specification {
         unitCoverage.contains('sample/liba/Liba') && unitCoverage.contains('sample/libb/Libb')
         itCoverage.contains('sample/liba/Liba') && itCoverage.contains('sample/libb/Libb')
 
-        and: 'allure aggregate report exists'
-        new File(projectDir, 'build/reports/allure-report/allureAggregateReport/index.html').exists()
+        and: 'allure results are collected into one subdirectory per project'
+        def libaResults = allureResultJsons('liba')
+        def libbResults = allureResultJsons('libb')
+        libaResults.any { it.text.contains('LibaTest') }
+        libaResults.any { it.text.contains('LibaIT') }
+        libbResults.any { it.text.contains('LibbTest') }
+        libbResults.any { it.text.contains('LibbIT') }
     }
 
     def 'subprojects without test-setup are not added to the rollup'() {
@@ -131,6 +136,12 @@ class TestRollupPluginSpec extends Specification {
             }
         }
         text.toString()
+    }
+
+    private List<File> allureResultJsons(String projectName) {
+        def dir = new File(projectDir, "build/allure-results/$projectName")
+        assert dir.directory: "missing collected allure results dir: $dir"
+        dir.listFiles().findAll { it.name.endsWith('-result.json') }
     }
 
     private String coverageXml(String reportName) {

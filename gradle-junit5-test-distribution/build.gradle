@@ -1,0 +1,77 @@
+/*
+ * Packages a JUnit 5 test suite as a self-contained, runnable application
+ * distribution. Build it on a connected machine with `./gradlew distZip`,
+ * carry the resulting zip across the air gap, unzip, and run
+ * `bin/e2e-tests` on the target network. Only a JRE is required there —
+ * no Gradle, no Maven repository access.
+ *
+ * Key idea: the tests live in the MAIN source set (src/main/java), not the
+ * test source set, so they are compiled into the application jar and every
+ * JUnit dependency lands in the distribution's lib/ directory. A small main
+ * class drives the JUnit Platform Launcher API and produces JUnit XML
+ * reports plus a console summary.
+ */
+
+plugins {
+    id 'java'
+    id 'application'
+}
+
+group = 'com.example'
+version = '1.0.0'
+
+// Compile for Java 17 bytecode with whatever JDK (17+) builds it, so the
+// distribution runs on any JRE 17 or newer on the air-gapped side.
+tasks.withType(JavaCompile).configureEach {
+    options.release = 17
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    implementation platform('org.junit:junit-bom:5.10.2')
+
+    // Note these are `implementation`, not `testImplementation`: the test
+    // engine and launcher must ship inside the distribution.
+    implementation 'org.junit.jupiter:junit-jupiter'
+    implementation 'org.junit.platform:junit-platform-launcher'
+    // Writes legacy JUnit XML reports consumable by CI tools / test viewers.
+    implementation 'org.junit.platform:junit-platform-reporting'
+
+    // Add whatever your e2e tests need to talk to the real system here,
+    // e.g. an HTTP client, a JDBC driver, a Kafka client...
+    // implementation 'org.postgresql:postgresql:42.7.3'
+}
+
+application {
+    applicationName = 'e2e-tests'
+    mainClass = 'com.example.e2e.E2eTestRunner'
+
+    // Defaults that operators can override at launch time with
+    // E2E_TESTS_OPTS or JAVA_OPTS, e.g.
+    //   E2E_TESTS_OPTS="-De2e.target.url=https://prod.internal" bin/e2e-tests
+    applicationDefaultJvmArgs = ['-Xmx512m']
+}
+
+// Bundle docs into the distribution so the person on the far side of the
+// air gap knows how to run it.
+distributions {
+    main {
+        contents {
+            from('README.md')
+        }
+    }
+}
+
+// Convenience: `./gradlew runSuite` executes the packaged suite locally,
+// exactly as it would run from the unzipped distribution.
+tasks.register('runSuite', JavaExec) {
+    group = 'verification'
+    description = 'Runs the e2e suite via the same entry point as the distribution.'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = application.mainClass
+    // Forward -De2e.* system properties from the Gradle invocation.
+    systemProperties System.properties.findAll { k, v -> k.toString().startsWith('e2e.') }
+}

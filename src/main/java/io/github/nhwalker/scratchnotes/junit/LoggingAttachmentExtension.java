@@ -5,6 +5,7 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.io.PrintStream;
 import java.io.UncheckedIOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
@@ -40,9 +41,12 @@ import org.junit.jupiter.api.extension.ExtensionContext.Namespace;
  * (so parameterized and repeated tests get unique file names). Both stdout and
  * stderr are interleaved into the same file, and every line in the file is
  * prefixed with {@code [STD] } or {@code [ERR] } identifying its source
- * stream; console output carries no prefixes. Under parallel execution a line
- * started by one stream and interleaved mid-line by the other keeps the
- * starter's prefix.
+ * stream; console output carries no prefixes. Every file line is
+ * single-source: if one stream leaves a line unterminated and the other
+ * stream writes next, the open line is broken with a newline and the new
+ * stream starts its own tagged line. (One cosmetic consequence under parallel
+ * interleaving: a println's text and its newline arrive separately, so an
+ * orphaned newline can produce an empty tagged line.)
  *
  * <p><b>Threading model:</b> a single daemon writer thread owns all capture
  * state and all file I/O. Printing threads pass output through to the original
@@ -79,10 +83,24 @@ public final class LoggingAttachmentExtension implements BeforeEachCallback, Aft
 
   private static final AtomicBoolean INSTALLED = new AtomicBoolean();
 
+  /** Identifies which console stream produced a chunk, and owns its file tag. */
+  private enum Source {
+    STD("[STD] "),
+    ERR("[ERR] ");
+
+    // Tags are pure ASCII, so these bytes are valid in any console charset.
+    final byte[] prefix;
+
+    Source(String tag) {
+      this.prefix = tag.getBytes(StandardCharsets.US_ASCII);
+    }
+  }
+
   /** A per-test capture file plus its line state; writer-thread-only. */
   private static final class Capture {
     final OutputStream out;
-    boolean atLineStart = true;
+    /** Stream that started the currently unterminated line; null at line start. */
+    Source openLineSource;
 
     Capture(OutputStream out) {
       this.out = out;
@@ -102,8 +120,8 @@ public final class LoggingAttachmentExtension implements BeforeEachCallback, Aft
    */
   private static void installIfNeeded() {
     if (INSTALLED.compareAndSet(false, true)) {
-      System.setOut(new PrintStream(new TeeOutputStream(System.out, "[STD] "), true, System.out.charset()));
-      System.setErr(new PrintStream(new TeeOutputStream(System.err, "[ERR] "), true, System.err.charset()));
+      System.setOut(new PrintStream(new TeeOutputStream(System.out, Source.STD), true, System.out.charset()));
+      System.setErr(new PrintStream(new TeeOutputStream(System.err, Source.ERR), true, System.err.charset()));
     }
   }
 
@@ -176,18 +194,18 @@ public final class LoggingAttachmentExtension implements BeforeEachCallback, Aft
    */
   private static final class TeeOutputStream extends OutputStream {
     private final PrintStream original;
-    private final byte[] prefix;
+    private final Source source;
 
-    TeeOutputStream(PrintStream original, String prefix) {
+    TeeOutputStream(PrintStream original, Source source) {
       this.original = original;
-      this.prefix = prefix.getBytes(original.charset());
+      this.source = source;
     }
 
     @Override
     public void write(int b) {
       original.write(b);
       byte[] chunk = {(byte) b};
-      WRITER.execute(() -> fanOutChunk(prefix, chunk));
+      WRITER.execute(() -> fanOutChunk(source, chunk));
     }
 
     @Override
@@ -196,7 +214,7 @@ public final class LoggingAttachmentExtension implements BeforeEachCallback, Aft
       // Copy before enqueueing: PrintStream reuses its internal buffer, so the
       // array's contents may change before the writer thread runs.
       byte[] chunk = Arrays.copyOfRange(buf, off, off + len);
-      WRITER.execute(() -> fanOutChunk(prefix, chunk));
+      WRITER.execute(() -> fanOutChunk(source, chunk));
     }
 
     @Override
@@ -212,10 +230,10 @@ public final class LoggingAttachmentExtension implements BeforeEachCallback, Aft
     }
 
     /** Runs on the writer thread only. */
-    private static void fanOutChunk(byte[] prefix, byte[] chunk) {
+    private static void fanOutChunk(Source source, byte[] chunk) {
       for (Capture capture : activeCaptures) {
         try {
-          writePrefixedLines(capture, prefix, chunk);
+          writePrefixedLines(capture, source, chunk);
         } catch (IOException ignored) {
         }
       }
@@ -231,13 +249,19 @@ public final class LoggingAttachmentExtension implements BeforeEachCallback, Aft
       }
     }
 
-    private static void writePrefixedLines(Capture capture, byte[] prefix, byte[] chunk)
+    private static void writePrefixedLines(Capture capture, Source source, byte[] chunk)
         throws IOException {
       int pos = 0;
       while (pos < chunk.length) {
-        if (capture.atLineStart) {
-          capture.out.write(prefix);
-          capture.atLineStart = false;
+        if (capture.openLineSource == null) {
+          capture.out.write(source.prefix);
+          capture.openLineSource = source;
+        } else if (capture.openLineSource != source) {
+          // The other stream owns the open line: break it and start a fresh
+          // tagged line so every file line is single-source.
+          capture.out.write('\n');
+          capture.out.write(source.prefix);
+          capture.openLineSource = source;
         }
         int newline = indexOf(chunk, (byte) '\n', pos);
         if (newline < 0) {
@@ -245,7 +269,7 @@ public final class LoggingAttachmentExtension implements BeforeEachCallback, Aft
           return;
         }
         capture.out.write(chunk, pos, newline - pos + 1);
-        capture.atLineStart = true;
+        capture.openLineSource = null;
         pos = newline + 1;
       }
     }

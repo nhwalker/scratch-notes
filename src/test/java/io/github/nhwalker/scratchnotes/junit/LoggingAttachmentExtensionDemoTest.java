@@ -28,6 +28,13 @@ class LoggingAttachmentExtensionDemoTest {
     System.err.println("ERR-MARKER-" + value);
   }
 
+  @Test
+  void interleaveTest() {
+    System.out.print("no-newline-out");
+    System.err.println("err-after");
+    System.out.println();
+  }
+
   @AfterAll
   static void verifyLogs() throws IOException {
     Path dir = Path.of("target", "test-logs", "LoggingAttachmentExtensionDemoTest");
@@ -44,6 +51,28 @@ class LoggingAttachmentExtensionDemoTest {
     // Each parameterized invocation gets its own indexed file.
     assertTrue(Files.exists(dir.resolve("paramTest_0.log")), "missing paramTest_0.log");
     assertTrue(Files.exists(dir.resolve("paramTest_1.log")), "missing paramTest_1.log");
+
+    // A stream interleaving into another stream's unterminated line must break
+    // the line and start its own tagged line: stdout left "no-newline-out"
+    // open, so "err-after" must appear on an [ERR]-tagged line of its own,
+    // never appended to the open [STD] line.
+    Path interleaveLog = dir.resolve("interleaveTest_0.log");
+    assertTrue(Files.exists(interleaveLog), "missing " + interleaveLog);
+    boolean sawOut = false;
+    boolean sawErr = false;
+    for (String line : Files.readAllLines(interleaveLog)) {
+      if (line.contains("no-newline-out")) {
+        sawOut = true;
+        assertTrue(line.startsWith("[STD] "), "stdout text on non-[STD] line: " + line);
+        assertTrue(!line.contains("err-after"), "streams merged on one line: " + line);
+      }
+      if (line.contains("err-after")) {
+        sawErr = true;
+        assertTrue(line.startsWith("[ERR] "), "stderr text on non-[ERR] line: " + line);
+      }
+    }
+    assertTrue(sawOut, "stdout text missing from interleave log");
+    assertTrue(sawErr, "stderr text missing from interleave log");
 
     // No line in any file may escape without a source prefix.
     try (var files = Files.list(dir)) {

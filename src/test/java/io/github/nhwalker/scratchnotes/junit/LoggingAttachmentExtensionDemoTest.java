@@ -74,7 +74,8 @@ class LoggingAttachmentExtensionDemoTest {
     assertTrue(sawOut, "stdout text missing from interleave log");
     assertTrue(sawErr, "stderr text missing from interleave log");
 
-    // No line in any file may escape without a source prefix.
+    // No line in any file may escape without a source prefix, and the
+    // console-only BEGIN/END banners must never leak into capture files.
     try (var files = Files.list(dir)) {
       for (Path log : files.toList()) {
         for (String line : Files.readAllLines(log)) {
@@ -82,6 +83,9 @@ class LoggingAttachmentExtensionDemoTest {
             assertTrue(line.startsWith("[_] ") || line.startsWith("[E] "),
                 "unprefixed line in " + log.getFileName() + ": " + line);
           }
+          assertTrue(!line.contains("BEGIN TEST") && !line.contains("END TEST")
+                  && !line.contains("####"),
+              "console banner leaked into " + log.getFileName() + ": " + line);
         }
       }
     }

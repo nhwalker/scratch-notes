@@ -41,7 +41,9 @@ import org.junit.jupiter.api.extension.ExtensionContext.Namespace;
  * (so parameterized and repeated tests get unique file names). Both stdout and
  * stderr are interleaved into the same file, and every line in the file is
  * prefixed with {@code [_] } (stdout) or {@code [E] } (stderr) identifying its
- * source stream; console output carries no prefixes. Every file line is
+ * source stream; console output carries no prefixes. The console additionally
+ * gets a hash-block BEGIN/END banner around each test, printed directly to the
+ * original stream so banners never appear in the capture files. Every file line is
  * single-source: if one stream leaves a line unterminated and the other
  * stream writes next, the open line is broken with a newline and the new
  * stream starts its own tagged line. (One cosmetic consequence under parallel
@@ -83,6 +85,11 @@ public final class LoggingAttachmentExtension implements BeforeEachCallback, Aft
 
   private static final AtomicBoolean INSTALLED = new AtomicBoolean();
 
+  private static final String BANNER_RAIL = "#".repeat(80);
+
+  /** The pre-tee System.out; banners print here so they bypass capture. */
+  private static volatile PrintStream console;
+
   /** Identifies which console stream produced a chunk, and owns its file tag. */
   private enum Source {
     STD("[_] "),
@@ -120,6 +127,7 @@ public final class LoggingAttachmentExtension implements BeforeEachCallback, Aft
    */
   private static void installIfNeeded() {
     if (INSTALLED.compareAndSet(false, true)) {
+      console = System.out;
       System.setOut(new PrintStream(new TeeOutputStream(System.out, Source.STD), true, System.out.charset()));
       System.setErr(new PrintStream(new TeeOutputStream(System.err, Source.ERR), true, System.err.charset()));
     }
@@ -128,6 +136,7 @@ public final class LoggingAttachmentExtension implements BeforeEachCallback, Aft
   @Override
   public void beforeEach(ExtensionContext context) {
     installIfNeeded();
+    printBanner("BEGIN TEST", context);
     Class<?> testClass = context.getRequiredTestClass();
     String methodName = context.getRequiredTestMethod().getName();
     PrintStream originalErr = System.err;
@@ -178,6 +187,22 @@ public final class LoggingAttachmentExtension implements BeforeEachCallback, Aft
     } catch (ExecutionException e) {
       throw new IOException("Failed to close test log file", e.getCause());
     }
+    printBanner("END TEST  ", context);
+  }
+
+  /**
+   * Prints a hash-block banner directly to the pre-tee console — never into
+   * capture files. Emitted as a single print call (with blank lines above and
+   * below) so parallel tests cannot tear a banner's lines apart.
+   */
+  private static void printBanner(String label, ExtensionContext context) {
+    String methodName = context.getRequiredTestMethod().getName();
+    String name = context.getRequiredTestClass().getSimpleName() + "." + methodName;
+    String displayName = context.getDisplayName();
+    if (!displayName.equals(methodName + "()")) {
+      name += " (" + displayName + ")";
+    }
+    console.println("\n" + BANNER_RAIL + "\n# " + label + " : " + name + "\n" + BANNER_RAIL + "\n");
   }
 
   private static String sanitize(String name) {

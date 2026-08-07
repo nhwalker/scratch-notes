@@ -1,0 +1,39 @@
+plugins {
+    id 'groovy'
+    id 'java-gradle-plugin'
+}
+
+group = 'io.github.nhwalker'
+version = '0.1.0'
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
+repositories {
+    mavenCentral()
+}
+
+gradlePlugin {
+    plugins {
+        integrationTest {
+            id = 'io.github.nhwalker.integration-test'
+            implementationClass = 'io.github.nhwalker.gradle.IntegrationTestPlugin'
+            displayName = 'Integration Test Plugin'
+            description = 'Adds an integrationTest source set and wires an integrationTest task into check.'
+        }
+    }
+}
+
+testing {
+    suites {
+        test {
+            useSpock()
+            dependencies {
+                implementation gradleTestKit()
+            }
+        }
+    }
+}

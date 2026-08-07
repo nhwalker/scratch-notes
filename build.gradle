@@ -1,0 +1,50 @@
+plugins {
+    id 'groovy'
+    id 'java-gradle-plugin'
+}
+
+group = 'io.github.nhwalker'
+version = '0.1.0'
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
+repositories {
+    mavenCentral()
+    gradlePluginPortal()
+}
+
+dependencies {
+    implementation 'io.qameta.allure-adapter:io.qameta.allure-adapter.gradle.plugin:4.1.0'
+}
+
+gradlePlugin {
+    plugins {
+        testSetup {
+            id = 'io.github.nhwalker.test-setup'
+            implementationClass = 'io.github.nhwalker.gradle.TestSetupPlugin'
+            displayName = 'Test Setup Plugin'
+            description = 'Configures unit (test) and integrationTest JVM test suites with JaCoCo coverage and Allure reporting.'
+        }
+        testRollup {
+            id = 'io.github.nhwalker.test-rollup'
+            implementationClass = 'io.github.nhwalker.gradle.TestRollupPlugin'
+            displayName = 'Test Rollup Plugin'
+            description = 'Aggregates JUnit, JaCoCo, and Allure results from all subprojects that apply the test-setup plugin.'
+        }
+    }
+}
+
+testing {
+    suites {
+        test {
+            useSpock()
+            dependencies {
+                implementation gradleTestKit()
+            }
+        }
+    }
+}

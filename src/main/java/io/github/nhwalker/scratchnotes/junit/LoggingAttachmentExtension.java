@@ -4,6 +4,7 @@ import java.io.BufferedOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.io.PrintStream;
+import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
@@ -37,7 +38,11 @@ import org.junit.jupiter.api.extension.ExtensionContext.Namespace;
  * one file per test invocation, named {@code <methodName>_<index>.log} where
  * the index starts at 0 and increments for each invocation of the same method
  * (so parameterized and repeated tests get unique file names). Both stdout and
- * stderr are interleaved into the same file.
+ * stderr are interleaved into the same file, and every line in the file is
+ * prefixed with {@code [STD] } or {@code [ERR] } identifying its source
+ * stream; console output carries no prefixes. Under parallel execution a line
+ * started by one stream and interleaved mid-line by the other keeps the
+ * starter's prefix.
  *
  * <p><b>Threading model:</b> a single daemon writer thread owns all capture
  * state and all file I/O. Printing threads pass output through to the original
@@ -69,14 +74,24 @@ public final class LoggingAttachmentExtension implements BeforeEachCallback, Aft
 
   // Touched only from tasks running on WRITER — thread-confined, so plain
   // collections with no synchronization.
-  private static final Set<OutputStream> activeCaptures = new HashSet<>();
+  private static final Set<Capture> activeCaptures = new HashSet<>();
   private static final Map<String, Integer> invocationCounts = new HashMap<>();
 
   private static final AtomicBoolean INSTALLED = new AtomicBoolean();
 
+  /** A per-test capture file plus its line state; writer-thread-only. */
+  private static final class Capture {
+    final OutputStream out;
+    boolean atLineStart = true;
+
+    Capture(OutputStream out) {
+      this.out = out;
+    }
+  }
+
   /** Links a test's open task to its close task; fields writer-thread-only. */
   private static final class CaptureHandle {
-    OutputStream stream;
+    Capture capture;
   }
 
   /**
@@ -87,8 +102,8 @@ public final class LoggingAttachmentExtension implements BeforeEachCallback, Aft
    */
   private static void installIfNeeded() {
     if (INSTALLED.compareAndSet(false, true)) {
-      System.setOut(new PrintStream(new TeeOutputStream(System.out), true, System.out.charset()));
-      System.setErr(new PrintStream(new TeeOutputStream(System.err), true, System.err.charset()));
+      System.setOut(new PrintStream(new TeeOutputStream(System.out, "[STD] "), true, System.out.charset()));
+      System.setErr(new PrintStream(new TeeOutputStream(System.err, "[ERR] "), true, System.err.charset()));
     }
   }
 
@@ -111,8 +126,8 @@ public final class LoggingAttachmentExtension implements BeforeEachCallback, Aft
           .resolve(sanitize(methodName) + "_" + index + ".log");
       try {
         Files.createDirectories(logFile.getParent());
-        handle.stream = new BufferedOutputStream(Files.newOutputStream(logFile));
-        activeCaptures.add(handle.stream);
+        handle.capture = new Capture(new BufferedOutputStream(Files.newOutputStream(logFile)));
+        activeCaptures.add(handle.capture);
       } catch (IOException e) {
         originalErr.println("LoggingAttachmentExtension: could not open " + logFile + ": " + e);
       }
@@ -130,12 +145,12 @@ public final class LoggingAttachmentExtension implements BeforeEachCallback, Aft
       // Awaited so the file is fully written and closed when the test ends;
       // all of this test's write tasks are queued ahead of this one.
       WRITER.submit(() -> {
-        if (handle.stream != null) {
-          activeCaptures.remove(handle.stream);
+        if (handle.capture != null) {
+          activeCaptures.remove(handle.capture);
           try {
-            handle.stream.close();
+            handle.capture.out.close();
           } catch (IOException e) {
-            throw new java.io.UncheckedIOException(e);
+            throw new UncheckedIOException(e);
           }
         }
       }).get();
@@ -154,21 +169,25 @@ public final class LoggingAttachmentExtension implements BeforeEachCallback, Aft
   /**
    * Forwards everything to the original stream inline, and enqueues a copy of
    * the bytes for the writer thread to fan out to every currently active
-   * per-test capture file. Capture-side failures are swallowed so a bad
-   * capture file can never break the real output path. Never closes the
-   * original or the capture streams; captures are owned by afterEach.
+   * per-test capture file, stamping this stream's prefix at each line start.
+   * Capture-side failures are swallowed so a bad capture file can never break
+   * the real output path. Never closes the original or the capture streams;
+   * captures are owned by afterEach.
    */
   private static final class TeeOutputStream extends OutputStream {
     private final PrintStream original;
+    private final byte[] prefix;
 
-    TeeOutputStream(PrintStream original) {
+    TeeOutputStream(PrintStream original, String prefix) {
       this.original = original;
+      this.prefix = prefix.getBytes(original.charset());
     }
 
     @Override
     public void write(int b) {
       original.write(b);
-      WRITER.execute(() -> fanOut(capture -> capture.write(b)));
+      byte[] chunk = {(byte) b};
+      WRITER.execute(() -> fanOutChunk(prefix, chunk));
     }
 
     @Override
@@ -176,14 +195,14 @@ public final class LoggingAttachmentExtension implements BeforeEachCallback, Aft
       original.write(buf, off, len);
       // Copy before enqueueing: PrintStream reuses its internal buffer, so the
       // array's contents may change before the writer thread runs.
-      byte[] copy = Arrays.copyOfRange(buf, off, off + len);
-      WRITER.execute(() -> fanOut(capture -> capture.write(copy)));
+      byte[] chunk = Arrays.copyOfRange(buf, off, off + len);
+      WRITER.execute(() -> fanOutChunk(prefix, chunk));
     }
 
     @Override
     public void flush() {
       original.flush();
-      WRITER.execute(() -> fanOut(OutputStream::flush));
+      WRITER.execute(TeeOutputStream::fanOutFlush);
     }
 
     @Override
@@ -192,18 +211,52 @@ public final class LoggingAttachmentExtension implements BeforeEachCallback, Aft
       // files may be closed through the tee.
     }
 
-    private interface CaptureOp {
-      void apply(OutputStream capture) throws IOException;
-    }
-
     /** Runs on the writer thread only. */
-    private static void fanOut(CaptureOp op) {
-      for (OutputStream capture : activeCaptures) {
+    private static void fanOutChunk(byte[] prefix, byte[] chunk) {
+      for (Capture capture : activeCaptures) {
         try {
-          op.apply(capture);
+          writePrefixedLines(capture, prefix, chunk);
         } catch (IOException ignored) {
         }
       }
+    }
+
+    /** Runs on the writer thread only. */
+    private static void fanOutFlush() {
+      for (Capture capture : activeCaptures) {
+        try {
+          capture.out.flush();
+        } catch (IOException ignored) {
+        }
+      }
+    }
+
+    private static void writePrefixedLines(Capture capture, byte[] prefix, byte[] chunk)
+        throws IOException {
+      int pos = 0;
+      while (pos < chunk.length) {
+        if (capture.atLineStart) {
+          capture.out.write(prefix);
+          capture.atLineStart = false;
+        }
+        int newline = indexOf(chunk, (byte) '\n', pos);
+        if (newline < 0) {
+          capture.out.write(chunk, pos, chunk.length - pos);
+          return;
+        }
+        capture.out.write(chunk, pos, newline - pos + 1);
+        capture.atLineStart = true;
+        pos = newline + 1;
+      }
+    }
+
+    private static int indexOf(byte[] array, byte target, int from) {
+      for (int i = from; i < array.length; i++) {
+        if (array[i] == target) {
+          return i;
+        }
+      }
+      return -1;
     }
   }
 }

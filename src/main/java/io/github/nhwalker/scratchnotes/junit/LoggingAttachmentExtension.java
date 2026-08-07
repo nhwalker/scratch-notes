@@ -6,10 +6,15 @@ import java.io.OutputStream;
 import java.io.PrintStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.jupiter.api.extension.AfterEachCallback;
 import org.junit.jupiter.api.extension.BeforeEachCallback;
@@ -34,6 +39,15 @@ import org.junit.jupiter.api.extension.ExtensionContext.Namespace;
  * (so parameterized and repeated tests get unique file names). Both stdout and
  * stderr are interleaved into the same file.
  *
+ * <p><b>Threading model:</b> a single daemon writer thread owns all capture
+ * state and all file I/O. Printing threads pass output through to the original
+ * stream inline, then enqueue a copy of the bytes for the writer thread — a
+ * test is never blocked by file writing. The one place a test thread waits is
+ * {@code afterEach}, which awaits the close task so the test's file is
+ * complete and closed when the test finishes (FIFO ordering guarantees all of
+ * the test's pending writes land first). A capture file that fails to open is
+ * reported to the original stderr but does not fail the test.
+ *
  * <p><b>Parallel execution</b> is supported with a caveat: output is not
  * attributed to threads, so while two tests run concurrently, everything
  * printed goes to <em>both</em> tests' files.
@@ -44,15 +58,26 @@ import org.junit.jupiter.api.extension.ExtensionContext.Namespace;
 public final class LoggingAttachmentExtension implements BeforeEachCallback, AfterEachCallback {
 
   private static final Namespace NAMESPACE = Namespace.create(LoggingAttachmentExtension.class);
-  private static final String STORE_KEY = "captureStream";
+  private static final String STORE_KEY = "captureHandle";
   private static final Path OUTPUT_ROOT = Path.of("target", "test-logs");
 
-  /** Guards writes to and membership changes of {@link #ACTIVE_CAPTURES}. */
-  private static final Object CAPTURE_LOCK = new Object();
+  private static final ExecutorService WRITER = Executors.newSingleThreadExecutor(runnable -> {
+    Thread thread = new Thread(runnable, "logging-attachment-writer");
+    thread.setDaemon(true);
+    return thread;
+  });
 
-  private static final Set<OutputStream> ACTIVE_CAPTURES = ConcurrentHashMap.newKeySet();
-  private static final ConcurrentHashMap<String, AtomicInteger> INVOCATION_COUNTS = new ConcurrentHashMap<>();
+  // Touched only from tasks running on WRITER — thread-confined, so plain
+  // collections with no synchronization.
+  private static final Set<OutputStream> activeCaptures = new HashSet<>();
+  private static final Map<String, Integer> invocationCounts = new HashMap<>();
+
   private static final AtomicBoolean INSTALLED = new AtomicBoolean();
+
+  /** Links a test's open task to its close task; fields writer-thread-only. */
+  private static final class CaptureHandle {
+    OutputStream stream;
+  }
 
   /**
    * Replaces System.out/err with tee streams, once per JVM. Installed lazily on
@@ -68,42 +93,58 @@ public final class LoggingAttachmentExtension implements BeforeEachCallback, Aft
   }
 
   @Override
-  public void beforeEach(ExtensionContext context) throws IOException {
+  public void beforeEach(ExtensionContext context) {
     installIfNeeded();
-    Path logFile = resolveLogFile(context);
-    Files.createDirectories(logFile.getParent());
-    OutputStream capture = new BufferedOutputStream(Files.newOutputStream(logFile));
-    context.getStore(NAMESPACE).put(STORE_KEY, capture);
-    synchronized (CAPTURE_LOCK) {
-      ACTIVE_CAPTURES.add(capture);
-    }
+    Class<?> testClass = context.getRequiredTestClass();
+    String methodName = context.getRequiredTestMethod().getName();
+    PrintStream originalErr = System.err;
+
+    CaptureHandle handle = new CaptureHandle();
+    context.getStore(NAMESPACE).put(STORE_KEY, handle);
+    // No waiting: FIFO ordering guarantees this open task runs before any
+    // write task the test enqueues afterwards.
+    WRITER.execute(() -> {
+      String counterKey = testClass.getName() + "#" + methodName;
+      int index = invocationCounts.merge(counterKey, 0, (old, ignored) -> old + 1);
+      Path logFile = OUTPUT_ROOT
+          .resolve(sanitize(testClass.getSimpleName()))
+          .resolve(sanitize(methodName) + "_" + index + ".log");
+      try {
+        Files.createDirectories(logFile.getParent());
+        handle.stream = new BufferedOutputStream(Files.newOutputStream(logFile));
+        activeCaptures.add(handle.stream);
+      } catch (IOException e) {
+        originalErr.println("LoggingAttachmentExtension: could not open " + logFile + ": " + e);
+      }
+    });
   }
 
   @Override
   public void afterEach(ExtensionContext context) throws IOException {
-    // Null-safe: afterEach runs even if beforeEach threw before storing a stream.
-    OutputStream capture = context.getStore(NAMESPACE).remove(STORE_KEY, OutputStream.class);
-    if (capture == null) {
+    // Null-safe: afterEach runs even if beforeEach threw before storing a handle.
+    CaptureHandle handle = context.getStore(NAMESPACE).remove(STORE_KEY, CaptureHandle.class);
+    if (handle == null) {
       return;
     }
-    synchronized (CAPTURE_LOCK) {
-      ACTIVE_CAPTURES.remove(capture);
+    try {
+      // Awaited so the file is fully written and closed when the test ends;
+      // all of this test's write tasks are queued ahead of this one.
+      WRITER.submit(() -> {
+        if (handle.stream != null) {
+          activeCaptures.remove(handle.stream);
+          try {
+            handle.stream.close();
+          } catch (IOException e) {
+            throw new java.io.UncheckedIOException(e);
+          }
+        }
+      }).get();
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new IOException("Interrupted while closing test log file", e);
+    } catch (ExecutionException e) {
+      throw new IOException("Failed to close test log file", e.getCause());
     }
-    System.out.flush();
-    System.err.flush();
-    synchronized (CAPTURE_LOCK) {
-      capture.close();
-    }
-  }
-
-  private static Path resolveLogFile(ExtensionContext context) {
-    Class<?> testClass = context.getRequiredTestClass();
-    String methodName = context.getRequiredTestMethod().getName();
-    String counterKey = testClass.getName() + "#" + methodName;
-    int index = INVOCATION_COUNTS.computeIfAbsent(counterKey, k -> new AtomicInteger()).getAndIncrement();
-    return OUTPUT_ROOT
-        .resolve(sanitize(testClass.getSimpleName()))
-        .resolve(sanitize(methodName) + "_" + index + ".log");
   }
 
   private static String sanitize(String name) {
@@ -111,10 +152,11 @@ public final class LoggingAttachmentExtension implements BeforeEachCallback, Aft
   }
 
   /**
-   * Forwards everything to the original stream and, additionally, to every
-   * currently active per-test capture file. Capture-side failures are swallowed
-   * so a bad capture file can never break the real output path. Never closes
-   * the original or the capture streams; captures are owned by afterEach.
+   * Forwards everything to the original stream inline, and enqueues a copy of
+   * the bytes for the writer thread to fan out to every currently active
+   * per-test capture file. Capture-side failures are swallowed so a bad
+   * capture file can never break the real output path. Never closes the
+   * original or the capture streams; captures are owned by afterEach.
    */
   private static final class TeeOutputStream extends OutputStream {
     private final PrintStream original;
@@ -126,46 +168,42 @@ public final class LoggingAttachmentExtension implements BeforeEachCallback, Aft
     @Override
     public void write(int b) {
       original.write(b);
-      synchronized (CAPTURE_LOCK) {
-        for (OutputStream capture : ACTIVE_CAPTURES) {
-          try {
-            capture.write(b);
-          } catch (IOException ignored) {
-          }
-        }
-      }
+      WRITER.execute(() -> fanOut(capture -> capture.write(b)));
     }
 
     @Override
     public void write(byte[] buf, int off, int len) {
       original.write(buf, off, len);
-      synchronized (CAPTURE_LOCK) {
-        for (OutputStream capture : ACTIVE_CAPTURES) {
-          try {
-            capture.write(buf, off, len);
-          } catch (IOException ignored) {
-          }
-        }
-      }
+      // Copy before enqueueing: PrintStream reuses its internal buffer, so the
+      // array's contents may change before the writer thread runs.
+      byte[] copy = Arrays.copyOfRange(buf, off, off + len);
+      WRITER.execute(() -> fanOut(capture -> capture.write(copy)));
     }
 
     @Override
     public void flush() {
       original.flush();
-      synchronized (CAPTURE_LOCK) {
-        for (OutputStream capture : ACTIVE_CAPTURES) {
-          try {
-            capture.flush();
-          } catch (IOException ignored) {
-          }
-        }
-      }
+      WRITER.execute(() -> fanOut(OutputStream::flush));
     }
 
     @Override
     public void close() {
-      // Intentionally a no-op: neither the original stream nor the shared
-      // capture files may be closed through the tee.
+      // Intentionally a no-op: neither the original stream nor the capture
+      // files may be closed through the tee.
+    }
+
+    private interface CaptureOp {
+      void apply(OutputStream capture) throws IOException;
+    }
+
+    /** Runs on the writer thread only. */
+    private static void fanOut(CaptureOp op) {
+      for (OutputStream capture : activeCaptures) {
+        try {
+          op.apply(capture);
+        } catch (IOException ignored) {
+        }
+      }
     }
   }
 }

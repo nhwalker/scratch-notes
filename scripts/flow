@@ -12,12 +12,6 @@ usage: flow <command> [args...]
   feature submit [<name>]                       push it, open merge requests
   feature finish <name>                         delete it once it has landed
 
-  release start <version> [--all | <project>...]  cut and publish release branches
-  release tag <version>                           annotated tag, pushed
-  release backmerge <version>                     merge requests back to the trunk
-  release finish <version>                        tag, then back-merge
-
-  backport <version> <commit>...                carry trunk fixes to a release
   status [--interesting]                        what every project is sitting on
   sync                                          safe `repo sync` + report
   cleanup [--pattern <glob>] [--remote]         drop branches that have landed

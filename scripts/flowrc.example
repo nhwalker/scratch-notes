@@ -1,12 +1,8 @@
 # Copy to the root of your repo workspace as .flowrc (or point FLOW_CONFIG at
 # it). Sourced by every flow script; plain shell assignments only.
 
-# Branch and tag naming.
+# Branch naming.
 #FLOW_FEATURE_PREFIX=feature/
-#FLOW_RELEASE_PREFIX=release/
-#FLOW_BACKPORT_PREFIX=backport/
-#FLOW_BACKMERGE_PREFIX=backmerge/
-#FLOW_TAG_PREFIX=v
 
 # repo sync behaviour.
 #FLOW_JOBS=8

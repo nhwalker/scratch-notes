@@ -1,6 +1,6 @@
 # Git flow scripts for a `repo` workspace
 
-Bash scripts for running a trunk-based branching model across a multi-repository
+Bash scripts for running short-lived feature branches across a multi-repository
 workspace managed by [Google's `repo` tool](https://gerrit.googlesource.com/git-repo),
 with code review on GitLab merge requests.
 
@@ -14,11 +14,7 @@ that do not, and reports per project what happened.
 ```
 main (trunk, per project, whatever the manifest pins)
  |
- |-- feature/<name>    short-lived, one merge request per project, rebased
- |
- '-- release/<version> cut from the trunk, stabilised, tagged, back-merged
-        ^
-        '-- backport/<version>  fixes that landed on the trunk first
+ '-- feature/<name>   short-lived, rebased, one merge request per project
 ```
 
 * The **trunk** is whatever revision the manifest pins for each project. It is
@@ -27,10 +23,6 @@ main (trunk, per project, whatever the manifest pins)
 * **Feature branches** are short-lived and rebased onto the trunk, never merged
   from it. One branch name spans the workspace; only the projects you actually
   changed get pushed and reviewed.
-* **Release branches** are cut from the trunk when a version needs to stabilise
-  while the trunk keeps moving. Fixes land on the trunk first and are
-  back-ported; at the end the release branch is tagged and back-merged so
-  nothing is lost.
 
 ## Requirements
 
@@ -50,11 +42,6 @@ individual scripts work standalone too.
 | `flow feature sync <name>` | sync, then rebase the branch onto each trunk |
 | `flow feature submit <name>` | push and open a merge request per project with commits |
 | `flow feature finish <name>` | once merged: delete the branch locally and on the server |
-| `flow release start <version> --all` | cut and publish `release/<version>` |
-| `flow release tag <version>` | annotated `v<version>` on each release branch, pushed |
-| `flow backport <version> <commit>...` | cherry-pick trunk commits onto the release branch, one merge request per project |
-| `flow release backmerge <version>` | merge requests carrying the release branch back to the trunk |
-| `flow release finish <version>` | tag, then back-merge |
 | `flow cleanup` | delete branches that have already landed on the trunk |
 
 Every command takes `-h`, `--dry-run` and `--yes`. Anything that pushes asks
@@ -76,15 +63,6 @@ updated without the risk of clobbering someone else's push. The merge request
 creation options are sent only on the first push; pass `--update-mr` to re-send
 the title, labels and assignees afterwards.
 
-### A release, start to finish
-
-```sh
-flow release start 24.10 --all              # cut and publish release/24.10
-# ... a fix lands on the trunk and is needed in the release ...
-flow backport 24.10 a1b2c3d                 # cherry-pick it, merge request against release/24.10
-flow release finish 24.10                   # tag v24.10, then back-merge to the trunk
-```
-
 ## Configuration
 
 Optional, in `<workspace>/.flowrc` (or wherever `FLOW_CONFIG` points). It is
@@ -93,10 +71,6 @@ sourced as shell, so it is plain `NAME=value` lines. See `flowrc.example`.
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `FLOW_FEATURE_PREFIX` | `feature/` | feature branch prefix |
-| `FLOW_RELEASE_PREFIX` | `release/` | release branch prefix |
-| `FLOW_BACKPORT_PREFIX` | `backport/` | back-port branch prefix |
-| `FLOW_BACKMERGE_PREFIX` | `backmerge/` | back-merge branch prefix |
-| `FLOW_TAG_PREFIX` | `v` | release tag prefix |
 | `FLOW_JOBS` | `4` | `repo sync` parallelism |
 | `FLOW_SYNC_ARGS` | `--no-tags` | extra `repo sync` arguments |
 | `FLOW_MR_REMOVE_SOURCE` | `1` | ask GitLab to delete the source branch on merge |
@@ -113,8 +87,8 @@ git push -o merge_request.create -o merge_request.target=main \
 ```
 
 That means no token to provision and no extra CLI to install, and it works with
-whatever ssh or https credentials you already push with. Two consequences worth
-knowing:
+whatever ssh or https credentials you already push with. Three consequences
+worth knowing:
 
 * **Your GitLab must advertise push options.** Self-managed instances need
   `receive.advertisePushOptions` on, which is the default in current versions.
@@ -127,13 +101,13 @@ knowing:
 
 ## What these scripts deliberately do not do
 
-* **They never touch the manifest.** Cutting a release branch does not repoint
-  the manifest at it; that is a reviewed change to the manifest repository, made
-  when you actually want the workspace to track the release. `release-start.sh`
-  reminds you.
+* **They never touch the manifest.** Branch operations are per project; pinning
+  the manifest at anything is a reviewed change to the manifest repository.
 * **No Gerrit.** Nothing calls `repo upload`; review is GitLab merge requests.
 * **No merging or approving.** The scripts get changes to review and get
   branches tidied up afterwards. A human merges.
+* **No release branches.** Releases are tagged and branched however your
+  project already does it.
 
 ## Known limitations
 
@@ -157,8 +131,8 @@ knowing:
 `scripts/tests/smoke.sh` builds a throw-away workspace of two projects with
 local bare "servers", stands in for the `repo` tool with
 `scripts/tests/fakebin/repo`, and runs the whole lifecycle against it: feature
-start through finish, release cut, tag, back-port, back-merge and cleanup. The
-bare repositories record the push options they receive, so the merge request
+start, submit, rebase and re-submit, sync, finish and cleanup. The bare
+repositories record the push options they receive, so the merge request
 plumbing is checked rather than assumed.
 
 ```sh

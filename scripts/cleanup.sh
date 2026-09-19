@@ -11,8 +11,8 @@ usage: cleanup.sh [options] [<project>...]
 Finds branches matching a pattern that are already contained in their
 project's trunk, and deletes them. Local only by default.
 
-Release branches are excluded unless you ask for them by pattern, and a
-branch with commits the trunk does not have is never deleted without --force.
+Only branches matching --pattern are considered, and a branch with commits the
+trunk does not have is never deleted without --force.
 
 options:
   --pattern <glob>  branches to consider (default: <feature-prefix>*,

@@ -123,40 +123,11 @@ expect_ok "leased force-push" "$S/flow" feature submit login
 expect_ok "server matches the rebased branch" \
   test "$(git -C app rev-parse feature/login)" = "$(git -C "$TMP/remotes/app.git" rev-parse refs/heads/feature/login)"
 
-say "release start"
-expect_ok "release start" "$S/flow" release start 1.0 --all
-expect_ok "release branch published in app" remote_has_branch app release/1.0
-expect_ok "release branch published in lib" remote_has_branch lib release/1.0
-expect_no "re-cutting an existing release is refused" "$S/flow" release start 1.0 --all
-
-say "stabilisation fix and tag"
-git -C app checkout --quiet release/1.0
-echo fix >> app/README
-git -C app commit --quiet -am "Fix the empty config crash"
-git -C app push --quiet origin release/1.0 2>/dev/null
-expect_ok "release tag" "$S/flow" release tag 1.0
-expect_ok "v1.0 pushed" git -C "$TMP/remotes/app.git" rev-parse --verify --quiet refs/tags/v1.0
-expect_ok "re-tagging the same commit is a no-op, not an error" "$S/flow" release tag 1.0
-
-say "back-port a trunk fix onto the release"
-sha=$(upstream_commit lib main "Guard the null session id")
-"$S/flow" sync >/dev/null 2>&1
-expect_ok "backport" "$S/flow" backport 1.0 "$sha"
-expect_ok "back-port branch pushed" remote_has_branch lib backport/1.0
-expect_ok "back-port merge request targets the release branch" has_opt lib merge_request.target=release/1.0
-expect_no "unknown commit rejected" "$S/flow" backport 1.0 0123456789abcdef0123456789abcdef01234567
-
-say "back-merge the release into the trunk"
-expect_ok "release backmerge" "$S/flow" release backmerge 1.0
-expect_ok "back-merge branch pushed" remote_has_branch app backmerge/1.0
-expect_ok "back-merge targets the trunk" has_opt app merge_request.target=main
-expect_ok "back-merge contains the release branch" \
-  git -C "$TMP/remotes/app.git" merge-base --is-ancestor refs/heads/release/1.0 refs/heads/backmerge/1.0
-
-say "release finish orchestrates tag + back-merge"
-expect_ok "cut 1.1" "$S/flow" release start 1.1 --all
-expect_ok "release finish" "$S/flow" release finish 1.1 --message "release 1.1"
-expect_ok "v1.1 pushed" git -C "$TMP/remotes/lib.git" rev-parse --verify --quiet refs/tags/v1.1
+say "workspace sync"
+expect_ok "flow sync" "$S/flow" sync
+echo dirt >> lib/README
+expect_no "sync refuses to run over uncommitted changes" "$S/flow" sync
+git -C lib checkout --quiet -- README
 
 say "feature finish"
 git -C app checkout --quiet feature/login
@@ -169,7 +140,13 @@ expect_no "local branch deleted" git -C app rev-parse --verify --quiet feature/l
 expect_no "server branch deleted" remote_has_branch app feature/login
 
 say "cleanup"
+"$S/flow" feature start stale --all >/dev/null 2>&1
+echo extra >> app/README
+git -C app commit --quiet -am "work that never landed"
 expect_ok "cleanup --list" "$S/flow" cleanup --list
+expect_ok "cleanup" "$S/flow" cleanup
+expect_no "branch that landed is deleted" git -C lib rev-parse --verify --quiet feature/stale
+expect_ok "branch with unlanded commits is kept" git -C app rev-parse --verify --quiet feature/stale
 
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

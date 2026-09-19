@@ -16,7 +16,6 @@ options:
   --branch <name>   report this branch instead of whatever is checked out,
                     and skip projects that do not have it
   --feature <name>  shorthand for --branch <feature-prefix><name>
-  --release <ver>   shorthand for --branch <release-prefix><ver>
   --interesting     only projects that are dirty, ahead, behind or detached
   --no-remote       skip the "is it on the server" column (no network)
   -v, --debug       verbose
@@ -33,7 +32,6 @@ while [ $# -gt 0 ]; do
     --branch) [ $# -ge 2 ] || usage; want="$2"; shift ;;
     --branch=*) want="${1#--branch=}" ;;
     --feature) [ $# -ge 2 ] || usage; want="FEATURE:$2"; shift ;;
-    --release) [ $# -ge 2 ] || usage; want="RELEASE:$2"; shift ;;
     --interesting) only_interesting=1 ;;
     --no-remote) check_remote= ;;
     --) shift; while [ $# -gt 0 ]; do projects+=("$1"); shift; done; break ;;
@@ -46,7 +44,6 @@ done
 flow_init
 case "$want" in
   FEATURE:*) want="${FLOW_FEATURE_PREFIX}${want#FEATURE:}" ;;
-  RELEASE:*) want="${FLOW_RELEASE_PREFIX}${want#RELEASE:}" ;;
 esac
 
 flow_load_projects ${projects[@]+"${projects[@]}"}

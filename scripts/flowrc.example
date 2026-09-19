@@ -1,0 +1,14 @@
+# Copy to the root of your repo workspace as .flowrc (or point FLOW_CONFIG at
+# it). Sourced by every flow script; plain shell assignments only.
+
+# Branch naming.
+#FLOW_FEATURE_PREFIX=feature/
+
+# repo sync behaviour.
+#FLOW_JOBS=8
+#FLOW_SYNC_ARGS="--no-tags --prune"
+
+# Merge requests.
+#FLOW_MR_REMOVE_SOURCE=1
+# GitLab 17.11 and newer:
+#FLOW_MR_AUTO_MERGE_OPT=merge_request.auto_merge

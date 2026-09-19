@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# flow - one entry point for the git-flow-over-repo scripts.
+set -euo pipefail
+FLOW_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
+
+usage() {
+  cat >&2 <<'USAGE'
+usage: flow <command> [args...]
+
+  feature start <name> [--all | <project>...]   cut a feature branch
+  feature sync [<name>]                         sync + rebase it onto the trunk
+  feature submit [<name>]                       push it, open merge requests
+  feature finish <name>                         delete it once it has landed
+
+  status [--interesting]                        what every project is sitting on
+  sync                                          safe `repo sync` + report
+  cleanup [--pattern <glob>] [--remote]         drop branches that have landed
+
+Every command takes -h for its own options. Run them anywhere inside a repo
+workspace. Settings live in <workspace>/.flowrc; see scripts/README.md.
+USAGE
+  exit "${1:-2}"
+}
+
+[ $# -gt 0 ] || usage
+case "$1" in
+  -h|--help|help) usage 0 ;;
+esac
+
+group="$1"; shift
+candidates=()
+if [ $# -gt 0 ]; then
+  case "$1" in
+    -*) : ;;
+    *) candidates+=("$FLOW_DIR/$group-$1.sh") ;;
+  esac
+fi
+candidates+=("$FLOW_DIR/$group.sh" "$FLOW_DIR/ws-$group.sh")
+
+for c in "${candidates[@]}"; do
+  if [ -x "$c" ]; then
+    # Drop the sub-command word only when it is what matched.
+    case "$c" in *"/$group-${1:-}.sh") shift ;; esac
+    exec "$c" "$@"
+  fi
+done
+
+printf 'flow: unknown command: %s %s\n\n' "$group" "${1:-}" >&2
+usage

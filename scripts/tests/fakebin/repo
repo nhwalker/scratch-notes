@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# A stand-in for Google's repo tool, just rich enough to run the flow scripts
+# against throw-away git repositories in smoke.sh. It is NOT a repo
+# implementation: it reads .repo/projects.tsv instead of a real manifest and
+# supports only forall, start and sync.
+set -euo pipefail
+ws=$PWD
+while [ ! -d "$ws/.repo" ]; do
+  [ "$ws" = / ] && { echo "fake repo: no .repo above $PWD" >&2; exit 1; }
+  ws=$(dirname "$ws")
+done
+list="$ws/.repo/projects.tsv"
+
+meta() { awk -F'\t' -v p="$1" '$1==p' "$list"; }
+
+filter_paths() {
+  if [ $# -eq 0 ]; then cut -f1 "$list"; return; fi
+  local want
+  for want in "$@"; do meta "$want" | cut -f1; done
+}
+
+cmd="${1:-}"; shift || true
+case "$cmd" in
+  forall)
+    args=(); command=
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        -c) shift; command="$1" ;;
+        -*) : ;;
+        *) args+=("$1") ;;
+      esac
+      shift
+    done
+    for p in $(filter_paths ${args[@]+"${args[@]}"}); do
+      IFS=$'\t' read -r path name remote rrev <<EOF
+$(meta "$p")
+EOF
+      ( cd "$ws/$path" \
+        && REPO_PATH="$path" REPO_PROJECT="$name" REPO_REMOTE="$remote" REPO_RREV="$rrev" \
+           sh -c "$command" )
+    done
+    ;;
+  start)
+    branch="${1:?branch}"; shift
+    rev=; all=; want=()
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --all) all=1 ;;
+        --rev|-r|--revision) shift; rev="$1" ;;
+        *) want+=("$1") ;;
+      esac
+      shift
+    done
+    if [ -n "$all" ]; then sel=$(cut -f1 "$list"); else sel=$(filter_paths ${want[@]+"${want[@]}"}); fi
+    for p in $sel; do
+      base="$rev"
+      [ -n "$base" ] || base=$(git -C "$ws/$p" for-each-ref --count=1 --format='%(refname:short)' refs/remotes/m/)
+      git -C "$ws/$p" checkout --quiet -b "$branch" "$base"
+      echo "$p: created $branch"
+    done
+    ;;
+  sync)
+    want=()
+    while [ $# -gt 0 ]; do
+      case "$1" in -*) : ;; *) want+=("$1") ;; esac
+      shift
+    done
+    for p in $(filter_paths ${want[@]+"${want[@]}"}); do
+      IFS=$'\t' read -r path name remote rrev <<EOF
+$(meta "$p")
+EOF
+      git -C "$ws/$path" fetch --quiet --prune "$remote"
+      git -C "$ws/$path" update-ref "refs/remotes/m/${rrev#refs/heads/}" \
+                                    "refs/remotes/$remote/${rrev#refs/heads/}"
+    done
+    ;;
+  *) echo "fake repo: unsupported command '$cmd'" >&2; exit 2 ;;
+esac

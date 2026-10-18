@@ -1,0 +1,6 @@
+# Spike runner image (not the final Phase 1 image).
+FROM registry.access.redhat.com/ubi9/ubi:9.8
+ARG VARIANT=media
+COPY repos/ /spike/repos/
+COPY install-packages.sh /spike/
+RUN /spike/install-packages.sh ${VARIANT}

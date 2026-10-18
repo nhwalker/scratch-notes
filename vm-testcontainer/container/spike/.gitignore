@@ -1,0 +1,5 @@
+seed/
+out/*.png
+out/*.wav
+out/*.webm
+out/serial*.log

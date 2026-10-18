@@ -988,7 +988,7 @@ public interface KeyboardInput { void type(String text); void press(String... qc
   2. Load classpath resource `<${BASE_PACKAGE} as path>/display/vmtc-fb-activate.py` (Appendix A.4).
   3. `copyToVm(bytes, "/tmp/vmtc-fb-activate.py")`.
   4. `exec("/usr/bin/python3","/tmp/vmtc-fb-activate.py","/dev/fb"+index)`. A non-zero exit throws `VmtcException` with the script's output.
-  5. **Wait for the modeset to land:** poll `screenshot()` every 200 ms until the image is no longer 640×480 (or 10 s elapse → `VmtcException("screen <i> did not change mode")`). The VNC server resizes its framebuffer only when QEMU processes the new mode; a recorder attached before that sees a desktop-size change. One CI run (spike run 18) produced a 0.8 s recording of head 1 that had been modeset immediately before; the recorder's log was not captured, so the cause is not proven, but waiting for the new size removes the race as a suspect (§15 R10).
+  5. **Wait for the modeset to land:** poll `screenshot()` every 200 ms until the image is no longer 640×480 (or 10 s elapse → `VmtcException("screen <i> did not change mode")`). The VNC server resizes its framebuffer only when QEMU processes the new mode; a recorder attached before that sees a desktop-size change. One CI run (spike run 18) produced a 0.8 s recording of head 1 that had been modeset immediately before; the recorder's log was not captured, so the cause is not proven. The window is real: with the wait in place, the spike measured **0.2 s** between `fb-activate.py` returning and `screendump` showing the new mode (run 24, both BIOS boots) **[V]**, so a recorder attached inside that window sees a framebuffer resize (§15 R10).
 
   Guest `python3` is present in Rocky GenericCloud [V].
 - **`type(text)`:**
@@ -1471,7 +1471,7 @@ The step-by-step checklist for each milestone is [PLAN-STEPS.md](PLAN-STEPS.md).
 | R7 | Large HTTP downloads over slow links | long first-run time | cache; retries; per-request timeout option |
 | R8 | Allure Java 2.x is the previous major (3.0.0 shipped 2026-09); its JUnit adapter declares JUnit 5.10.3 runtime deps that the 5.14 BOM overrides | a future 2.x drop would force the 3.x/JUnit 6 move | D10; versions live in §0 |
 | R9 | `--single-file` Allure reports embed every attachment; a job with many WebM recordings can produce a report of tens of MB | slow to open | keep recordings short (≤ 12 s, 1 Mbps); the raw results are uploaded too |
-| R10 | **Intermittent short recording** (spike run 18, image-mount boot): head 1 recorded 0.8 s of a 12 s window; the same check passed in the two other boots of that run and in all other runs; the recorder's own log was not captured | a truncated video would pass silently without the `VMTC_REC_DIED` rule | `vmtc-rec stop` reports a recorder that exited early (§7.2 step 0); `forceModeset()` waits for the new mode (§9.7); the spike harness now keeps `screen<i>.log`, so a recurrence is diagnosable; T8/T10 assert the duration |
+| R10 | **Intermittent short recording** (spike run 18, image-mount boot): head 1 recorded 0.8 s of a 12 s window; the same check passed in the two other boots of that run and in all other runs; the recorder's own log was not captured | a truncated video would pass silently without the `VMTC_REC_DIED` rule | `vmtc-rec stop` reports a recorder that exited early (§7.2 step 0); `forceModeset()` waits for the new mode (§9.7; measured window 0.2 s, run 24); the spike harness now keeps `screen<i>.log`, so a recurrence is diagnosable; T8/T10 assert the duration |
 | L8 | VNC is unauthenticated (D8) | anyone who can reach the published port can view and type into the VM | loopback bind by default; `withVncBindAddress` is an explicit opt-in |
 
 ---
@@ -1513,6 +1513,7 @@ All on branch `claude/vm-testcontainer-plan-lqhfa6` of this repository (PR #9).
 | 12 (`39147798578`) | Engine pull of a private image: 401 / Docker config / `podman login` fallback; image mount through Testcontainers on Podman blocked by the inspect `Binds` parse |
 | 18 (`39169941120`) | **Flake observed:** `record_screens` on the image-mount boot recorded 0.8 s of 12 s on head 1 (passed in the two other boots of the run and in every other run); recorder log not captured → harness hardened (§15 R10) |
 | 19 (`39170272915`) | UEFI boot of the customised guest (OVMF_CODE.fd + VARS copy): efivars present, all checks pass; under OVMF both heads start at 1280×800 |
+| 24 (`39170999480`) | Hardened recorder harness green on all 7 jobs; the modeset of head 1 becomes visible to `screendump` 0.2 s after `fb-activate.py` returns (both BIOS boots); UEFI boot green again |
 | 16 (`39167116353`) | Explicit `pullImageCmd().withAuthConfig()` pull with no stored credentials (S4) and the wrong-password exception (S5, `UnauthorizedException`); the probe JVM run through `sudo -iu` has the `kvm` group and sees `/dev/kvm` readable/writable in the 0660 scenarios while the CI-shell JVM does not (Podman 4.9.3 and 5.7.0) |
 
 **Sandbox-only evidence** (Docker 29.8, TCG):

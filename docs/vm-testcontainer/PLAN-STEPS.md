@@ -64,7 +64,7 @@
 **Verify:** `git show --stat HEAD` lists `docs/vm-testcontainer/PLAN.md`, and the commit message has one `<name> <version> <source URL> <date>` line per version row.
 
 ### Step 0.4 — Record open decisions
-- [ ] Open the Deviation log (§D) and confirm its seeded items: R2 (decided: private registry only), R3 (SELinux hosts), and §8.4 UEFI boot (T22).
+- [ ] Open the Deviation log (§D) and confirm its seeded items: R2 (decided: private registry only) and R3 (SELinux hosts).
 
 **Verify:** §D lists the three items with owner "unassigned" or a name.
 
@@ -430,7 +430,7 @@
 - [ ] Write T5, T6, T12, T22 per PLAN.md §13.1.
 - [ ] Run on KVM and TCG; regenerate the Allure report and check the screenshots render.
 
-**Verify:** all pass in both runs. If T22 fails because the reference guest cannot boot under UEFI, log it in §D and propose either a UEFI-capable test disk or retiring REQ-LIFE-09 — do not silently drop the test.
+**Verify:** all pass in both runs. (UEFI boot of the reference guest was verified in the spike, CI run 19.)
 **Requirements:** REQ-DISP-02, REQ-DISP-03, REQ-VNC-01, REQ-VNC-02, REQ-LIFE-08, REQ-LIFE-09, REQ-LIFE-12, REQ-KEY-01
 
 ### 2.G — Phase 2 gate
@@ -655,7 +655,7 @@ Record every place where reality differed from PLAN.md, every [U] outcome, and e
 |---|------|------|--------------------------|-------------------------------------|----------------|
 | 1 | 2026-10-18 | 0.4 | R2 decided: UBI stays (enterprise policy); images go only to a private registry inside the organisation, never public. Residual question for the policy owner: EULA §2 trademark-removal wording vs intra-organisation sharing | PLAN.md §15 R2, §0, §6.4 check 11 (license label inherited) | closed (residual: policy owner) |
 | 2 | | 0.4 | R3: SELinux-enforcing host acceptance (REQ-DISK-10) | — | open |
-| 3 | | 0.4 | UEFI boot of the reference guest (PLAN.md §8.4, T22); the firmware files are confirmed present | — | open |
+| 3 | 2026-10-18 | 0.4 | UEFI boot of the reference guest verified in the spike (CI run 19): efivars present, all checks pass | PLAN.md §8.4, §3.2, §13 T22 | closed |
 
 ---
 

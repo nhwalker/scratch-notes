@@ -231,7 +231,7 @@ Legend:
 | Several `-qmp` monitors may coexist, e.g. TCP and Unix. A TCP QMP chardev serves **one client at a time**: a second client gets no greeting while the first is connected | [V] |
 | `tini` as PID 1 reaps orphaned children (no zombies). With QEMU as PID 1, stopped recorders stayed zombies | [V] |
 | Red Hat calls direct `qemu-kvm` use and TCG "unsupported". Acceptable for test infrastructure | [V] |
-| Rocky 9 `edk2-ovmf-20241117-8.el9` ships `/usr/share/edk2/ovmf/OVMF_CODE.fd`, `OVMF_CODE.secboot.fd`, `OVMF_CODE.cc.fd`, `OVMF_VARS.fd`, `OVMF_VARS.secboot.fd` (package file list, 2026-10-18). Booting with them is not yet exercised | [V] (paths) / [U] (boot) |
+| Rocky 9 `edk2-ovmf-20241117-8.el9` ships `/usr/share/edk2/ovmf/OVMF_CODE.fd`, `OVMF_CODE.secboot.fd`, `OVMF_CODE.cc.fd`, `OVMF_VARS.fd`, `OVMF_VARS.secboot.fd`. The reference guest boots under `OVMF_CODE.fd` + a writable `OVMF_VARS.fd` copy with all feature checks passing (§8.4) | [V] (run 19) |
 
 ### 3.3 Measured on GitHub-hosted runners (4 vCPU, 16 GB)
 
@@ -624,8 +624,9 @@ This is the verified `gst-record.sh` + `rec.sh` **[V]** (the spike also verified
 -drive if=pflash,format=raw,unit=1,file=/vm/run/OVMF_VARS.fd
 ```
 
-- Both files exist in Rocky 9's `edk2-ovmf-20241117-8.el9` **[V]** (§3.2). The non-secure-boot `OVMF_CODE.fd` needs no `smm=on`. Booting the reference guest with them is **[U]**; T22 settles it.
-- If T22 fails because the guest is not UEFI-capable, PLAN-STEPS.md step 2.6 says what to do; do not silently drop the test.
+- Both files exist in Rocky 9's `edk2-ovmf-20241117-8.el9` **[V]** (§3.2). The non-secure-boot `OVMF_CODE.fd` needs no `smm=on`.
+- **Verified (spike run 19, KVM):** the customised Rocky 9 guest boots under this firmware pair exactly as under BIOS: QGA ready 11.5 s after container start, `/sys/firmware/efi` present with `Boot0000..Boot0002` efivars and `fw_platform_size` 64, and every other feature check (exec, copy, screenshots, keyboard, 2-screen recording, audio, all hot-plug cases) passes **[V]**.
+- Side effect worth knowing: under OVMF **both** heads reported 1280×800 at the first screenshot, i.e. the firmware's GOP initialises the secondary head, so `forceModeset()` is a no-op there; under SeaBIOS head 1 stays 640×480 until the guest modesets it **[V]** (same run).
 
 ---
 
@@ -1394,7 +1395,7 @@ The `checkParameterHygiene` task (§0 rules, §11.5) runs in the `unit` job.
 | T19 | `GuestContractIT.guestNotPrepared` | Stock Rocky served from an in-JVM `HttpServer` (`<syspropPrefix>.it.baseQcow2`) with its SHA-256, no seed → expect `GuestCommandDisabledException`; attach `guest-info`. Then a seed from `CloudInitSeed.builder().runcmd(<G3 sed line>, "systemctl restart qemu-guest-agent")` → expect `GuestAgentConfinedException`; attach `id -Z` | REQ-GUEST-01, REQ-GUEST-02 | [V] (behaviour) |
 | T20 | `AccelIT.kvmRequireWithoutKvm` (`tcg`) | `assumeFalse(KvmDetector.usable())`; property cleared; `withKvm(REQUIRE)` → `start()` throws exactly `KvmUnavailableException`; message equals the §9.6 text for `!present()` or `present() && !usable()` | REQ-KVM-02, REQ-ERR-03 | [U] |
 | T21 | `CleanupIT.orphanCleanup` | With docker-java, create (do not start) three containers from the slim runner image, labelled: (1) other session, created now − 2 h; (2) other session, created now − 10 min; (3) current session, now − 2 h. `VmtcCleanup.removeOrphans()` → returns 1, only (1) is gone. Repeat with override `cleanup=false` → returns 0 | REQ-CLN-01 | [U] |
-| T22 | `UefiIT.uefiBoot` | `withFirmware(Firmware.UEFI)`; `test -d /sys/firmware/efi`; screenshot | REQ-LIFE-09 | [U] |
+| T22 | `UefiIT.uefiBoot` | `withFirmware(Firmware.UEFI)`; `test -d /sys/firmware/efi`; screenshot | REQ-LIFE-09 | [V] (run 19: efivars present, all checks pass under OVMF) |
 | T23 | `GuestContractIT.referenceGuestNoSeed` | `VmImage.referenceGuest()`, no seed; `id -Z`, `ls /lib/modules/$(uname -r)`, `amixer -c 0 get Master` | REQ-GUEST-04, REQ-DISK-11 | [V] (run 5: 11.2 s) |
 | T24 | `RecordingIT.noZombieRecorders` (*media*) | `cat /proc/1/comm`; start + stop a recording; within 2 s `execInContainer("sh","-c","grep -H '^State:' /proc/[0-9]*/status")` has no `Z (zombie)` | REQ-IMG-05 | [V] (tini, sandbox) |
 | T25 | `GuestContractIT.stockRockyWithSeed` | Stock Rocky from the in-JVM server (as T19) + `CloudInitSeed.builder().stockRocky().writeFile("/etc/vmtc-test","x\n").build()`; `saveSerialLog` right after `start()`; T3's first command; read `/etc/vmtc-test`; `amixer` | REQ-GUEST-06, REQ-GUEST-07, REQ-DISK-02 | [V] (seed), file [U] |
@@ -1510,6 +1511,8 @@ All on branch `claude/vm-testcontainer-plan-lqhfa6` of this repository (PR #9).
 | 10 (`39146302796`) | ORAS SDK prototype (rejected option) and HTTP downloader: all checks pass |
 | 11 (`39146734647`) | Image mount: works through the Podman CLI (full VM boot); compat API rejects `ReadOnly` |
 | 12 (`39147798578`) | Engine pull of a private image: 401 / Docker config / `podman login` fallback; image mount through Testcontainers on Podman blocked by the inspect `Binds` parse |
+| 18 (`39169941120`) | **Flake observed:** `record_screens` on the image-mount boot recorded 0.8 s of 12 s on head 1 (passed in the two other boots of the run and in every other run); recorder log not captured → harness hardened (§15 R10) |
+| 19 (`39170272915`) | UEFI boot of the customised guest (OVMF_CODE.fd + VARS copy): efivars present, all checks pass; under OVMF both heads start at 1280×800 |
 | 16 (`39167116353`) | Explicit `pullImageCmd().withAuthConfig()` pull with no stored credentials (S4) and the wrong-password exception (S5, `UnauthorizedException`); the probe JVM run through `sudo -iu` has the `kvm` group and sees `/dev/kvm` readable/writable in the 0660 scenarios while the CI-shell JVM does not (Podman 4.9.3 and 5.7.0) |
 
 **Sandbox-only evidence** (Docker 29.8, TCG):

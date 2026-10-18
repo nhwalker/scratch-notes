@@ -28,6 +28,7 @@ ap.add_argument("--screens", type=int, default=2)
 ap.add_argument("--network-host", action="store_true")
 ap.add_argument("--skip", default="")
 ap.add_argument("--boot-timeout", type=float, default=1500)
+ap.add_argument("--no-seed", action="store_true", help="boot without cloud-init seed (pre-customized guest)")
 args = ap.parse_args()
 os.makedirs(args.out, exist_ok=True)
 SKIP = set(x for x in args.skip.split(",") if x)
@@ -113,7 +114,10 @@ if args.network_host:
 else:
     run += ["-e", "VNC_BIND=0.0.0.0"] + sum((["-p", f"127.0.0.1::{5900 + i}"] for i in range(args.screens)), [])
 run += ["-v", f"{os.path.abspath(args.disk)}:/vm/base/disk.img:ro", "-v", f"{HERE}:/spike:ro", args.image,
-        "bash", "-c", "xorriso -as mkisofs -quiet -V cidata -J -r -o /vm/seed.iso /spike/seed/user-data /spike/seed/meta-data && exec /spike/start-vm.sh"]
+        "bash", "-c", "exec /spike/start-vm.sh" if args.no_seed else
+        "xorriso -as mkisofs -quiet -V cidata -J -r -o /vm/seed.iso /spike/seed/user-data /spike/seed/meta-data && exec /spike/start-vm.sh"]
+if args.no_seed:
+    SKIP.add("cloud_init_done")
 T_START = time.time()
 sh(run)
 boot = {}
@@ -187,6 +191,8 @@ def c_shot():
 
 @check("send_key")
 def c_keys():
+    r = gsh("echo root:spike | chpasswd")
+    assert r["exit"] == 0, r
     cx("python3", "/spike/typekeys.py", "root\\n"); time.sleep(3)
     cx("python3", "/spike/typekeys.py", "spike\\n"); time.sleep(5)
     cx("python3", "/spike/typekeys.py", "echo TYPED_OK > /dev/ttyS0\\n")
@@ -247,12 +253,13 @@ def c_record():
 def c_audio():
     if gexec("/usr/bin/test", "-x", "/usr/bin/speaker-test")["exit"] != 0:
         raise RuntimeError("alsa-utils not installed in guest (seed dnf failed?)")
+    mixer = gsh("amixer -c 0 get Master | tail -2")["out"].strip().replace("\n", " ")
     hmp("wavcapture /vm/out/cap.wav snd0")
     r = gexec("/usr/bin/speaker-test", "-t", "sine", "-f", "1000", "-c", "2", "-l", "1", timeout=60)
     hmp("stopcapture 0")
     stats = analyze_wav.analyze(copy_out("/vm/out/cap.wav"))
     assert stats["frames"] > 0 and stats["rms"] > 100 and 900 <= stats["freq"] <= 1100, stats
-    return f"speaker-test exit={r['exit']}; {stats}"
+    return f"speaker-test exit={r['exit']}; mixer at start: {mixer}; {stats}"
 
 
 def lsblk():

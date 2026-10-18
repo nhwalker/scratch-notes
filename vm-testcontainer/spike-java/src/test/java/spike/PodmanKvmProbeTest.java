@@ -125,13 +125,21 @@ class PodmanKvmProbeTest {
     var client = DockerClientFactory.instance().client();
     String digest = client.inspectImageCmd(image).exec().getId();
     String id = client.createContainerCmd(image).withCmd("/none").exec().getId();
-    byte[] got;
+    byte[] got = null;
+    StringBuilder entries = new StringBuilder();
+    // copy the DIRECTORY (the production design does not know the file name in advance)
     try (var tar = new org.apache.commons.compress.archivers.tar.TarArchiveInputStream(
-        client.copyArchiveFromContainerCmd(id, "/disk/disk.qcow2").exec())) {
-      var e = tar.getNextEntry();
-      got = tar.readAllBytes();
-      String rec = "containerdisk | entry=" + e.getName() + " size=" + got.length + " imageId=" + digest
-          + " match=" + java.util.Arrays.equals(got, Files.readAllBytes(expected)) + System.lineSeparator();
+        client.copyArchiveFromContainerCmd(id, "/disk/").exec())) {
+      org.apache.commons.compress.archivers.tar.TarArchiveEntry e;
+      while ((e = tar.getNextEntry()) != null) {
+        entries.append(e.getName()).append(e.isDirectory() ? "(dir)" : e.isFile() ? "(file)" : "(other)").append(' ');
+        if (e.isFile()) {
+          got = tar.readAllBytes();
+        }
+      }
+      String rec = "containerdisk-dir | entries=" + entries.toString().trim() + " size=" + (got == null ? -1 : got.length)
+          + " imageId=" + digest + " match=" + (got != null && java.util.Arrays.equals(got, Files.readAllBytes(expected)))
+          + System.lineSeparator();
       Files.createDirectories(RESULTS.getParent());
       Files.writeString(RESULTS, rec, java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND);
       System.out.print("### " + rec);

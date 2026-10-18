@@ -95,6 +95,61 @@ jobs:
           path: out-${{ matrix.os }}-${{ matrix.accel }}/
           retention-days: 14
 
+  guest-build:
+    name: guest-build (reference guest pipeline, KVM)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Enable /dev/kvm (0666)
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
+
+      - name: Build spike image
+        run: podman build -f "$SPIKE_DIR/Containerfile.spike" --build-arg VARIANT=media -t "$IMAGE" "$SPIKE_DIR"
+
+      - name: Restore Rocky guest image
+        id: cache-rocky
+        uses: actions/cache@v4
+        with:
+          path: ~/vm-images
+          key: rocky-${{ env.ROCKY_SHA256 }}
+
+      - name: Download Rocky guest image
+        if: steps.cache-rocky.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/vm-images
+          curl -fsSL --retry 5 -o ~/vm-images/$ROCKY_IMAGE "https://dl.rockylinux.org/pub/rocky/9/images/x86_64/$ROCKY_IMAGE"
+          echo "$ROCKY_SHA256  $HOME/vm-images/$ROCKY_IMAGE" | sha256sum -c -
+
+      - name: Customize + flatten + package containerDisk
+        run: |
+          "$SPIKE_DIR/build-guest.sh" podman "$IMAGE" "$HOME/vm-images/$ROCKY_IMAGE" "$HOME/guest-work" localhost/vmtc-guest:spike kvm \
+            2>&1 | tee guest-build.log
+
+      - name: Boot the customized guest WITHOUT a seed and run all checks
+        run: |
+          python3 "$SPIKE_DIR/ci_spikes.py" --engine podman --image "$IMAGE" --no-seed \
+            --disk "$HOME/guest-work/run/rocky9-vmtc.qcow2" --accel kvm --out out-guest-noseed
+
+      - name: Publish results
+        if: always()
+        run: |
+          { echo '### guest-build'; echo '```'; grep -E "seconds=|DNF_RC|CUSTOMIZE_DONE|qcow2|localhost/vmtc-guest" guest-build.log; echo '```'; } >> "$GITHUB_STEP_SUMMARY" || true
+          cat out-guest-noseed/results.md >> "$GITHUB_STEP_SUMMARY" || true
+          cp guest-build.log out-guest-noseed/ 2>/dev/null || true
+          cp "$HOME/guest-work/run/customize-serial.log" out-guest-noseed/ 2>/dev/null || true
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: guest-build
+          path: out-guest-noseed/
+          retention-days: 14
+
   compat-api-probe:
     name: compat-api-probe (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

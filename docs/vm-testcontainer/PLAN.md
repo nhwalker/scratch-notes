@@ -212,7 +212,7 @@ registry.access.redhat.com/ubi9/ubi:9.8          ← base (R2)
 
 Splitting the images keeps the common case (exec, copy, screenshot) small. The Java side checks for `ffmpeg` and reports a clear error if screen recording is requested on the slim image.
 
-Open question: a single image may be simpler. See §14.
+**Decided:** slim + media, two images.
 
 ### 4.4 Container entrypoint (`vm-entrypoint.sh`)
 
@@ -581,11 +581,11 @@ withCreateContainerCmdModifier(cmd -> cmd.getHostConfig()
 
 ## 11. Project layout
 
-The repo is currently a single-module Maven project (`scratch-notes`). Proposal: convert it to a multi-module build, or keep the VM work in a self-contained subdirectory.
+The repo is currently a single-module Maven project (`scratch-notes`). **Decided:** convert it to a multi-module build. The existing code moves into its own child module, or stays in the root as decided at implementation time.
 
 ```
 scratch-notes/
-├─ pom.xml                         (becomes <packaging>pom</packaging> aggregator — or leave as-is, see §14)
+├─ pom.xml                         (becomes <packaging>pom</packaging> aggregator — decided)
 ├─ vm-testcontainer/
 │  ├─ pom.xml
 │  ├─ container/
@@ -698,14 +698,20 @@ Phase 0  Spikes (de-risk)      ──► Phase 1  Core VM        ──► Phase
 | K8 | Exposed QMP and QGA ports give full VM control | Local privilege surface | Bind to loopback only (Testcontainers default host IP); document |
 | K9 | RHEL device allow-list missing something needed (e.g. a VGA type or USB device) | Feature gap | Spike #2; document unsupported devices |
 
-### Open questions (for you)
+### Decisions (2026-10-18)
 
-1. **Branch name:** you asked for `vm-testcontainer`. This session is restricted to pushing to `claude/vm-testcontainer-plan-lqhfa6`, so the plan lives there. Rename or merge as you like.
-2. **K1 fallback:** if UBI + Rocky mixing proves unworkable, is a Rocky 9.8 base acceptable? Or is a RHEL-entitled build (subscription inside the image build) available to you?
-3. **One image or two:** a slim runner plus a `-media` variant with ffmpeg, or one image with everything?
-4. **Module placement:** convert `scratch-notes` to a multi-module Maven build, or keep `vm-testcontainer/` standalone?
-5. **Reference guest OS** for this module's own tests: Rocky 9 (heavy but matches the ecosystem), Fedora Cloud, Alpine (small; QGA availability and an init without systemd would need checking), or something else?
-6. **Guest OS scope:** Linux guests only for v1? Windows guests would need virtio-win drivers and a Windows QGA, which are not covered here.
+| Topic | Decision |
+|-------|----------|
+| Branch | Plan lives on `claude/vm-testcontainer-plan-lqhfa6` (session restriction); rename/merge as desired |
+| K1 fallback (UBI + Rocky mix fails) | **Decide after Phase 0 spike #1** (options: Rocky 9.8 base, or RHEL-entitled build) |
+| Image variants | **Slim runner + `-media` variant** (ffmpeg-free only in media) |
+| Module placement | **Multi-module**: root `pom.xml` becomes aggregator; `vm-testcontainer` is a child module |
+
+### Still open
+
+1. **Reference guest OS** for this module's own tests: Rocky 9 (heavy, ecosystem match), Fedora Cloud, Alpine (small; QGA + non-systemd init to verify), other?
+2. **Guest OS scope:** Linux-only for v1? (Windows would need virtio-win drivers + Windows QGA, not covered here.)
+3. **K2 licensing** check for publishing a UBI + Rocky/EPEL mixed image.
 
 ---
 
@@ -724,4 +730,5 @@ Phase 0  Spikes (de-risk)      ──► Phase 1  Core VM        ──► Phase
 - **Do first:** Phase 0 spikes.
   - The UBI + Rocky repo mix (K1) is the riskiest item.
   - Others: the device allow-list, slirp vs passt, `wavcapture` with the `none` backend, `/dev/kvm` group handling through Podman's compat API, ffmpeg-free codecs, and a reference guest.
-- **Your decisions needed:** the open questions in §14, especially the K1 fallback and the licensing check (K2).
+- **Decided:** slim + media images, multi-module build. The K1 fallback is decided after the spike.
+- **Still open (§14):** the reference guest OS, the guest OS scope, and the licensing check (K2).

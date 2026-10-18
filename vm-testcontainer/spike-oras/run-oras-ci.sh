@@ -11,7 +11,7 @@ U=vmtc P=s3cret FAIL=0
 VER=$(curl -fsSL -H "Authorization: Bearer ${GITHUB_TOKEN:-}" https://api.github.com/repos/oras-project/oras/releases/latest | jq -r .tag_name | sed 's/^v//')
 curl -fsSL -o "$W/oras.tgz" "https://github.com/oras-project/oras/releases/download/v$VER/oras_${VER}_linux_amd64.tar.gz"
 curl -fsSL -o "$W/checksums.txt" "https://github.com/oras-project/oras/releases/download/v$VER/oras_${VER}_checksums.txt"
-(cd "$W" && grep "oras_${VER}_linux_amd64.tar.gz" checksums.txt | sed "s|oras_${VER}_linux_amd64.tar.gz|oras.tgz|" | sha256sum -c -)
+(cd "$W" && grep -E "  oras_${VER}_linux_amd64\.tar\.gz$" checksums.txt | sed "s|oras_${VER}_linux_amd64.tar.gz|oras.tgz|" | sha256sum -c -)
 tar -xzf "$W/oras.tgz" -C "$W" oras
 ORAS="$W/oras --registry-config $W/oras-config.json"   # keep oras' own login out of ~/.docker/config.json
 "$W/oras" version | head -1

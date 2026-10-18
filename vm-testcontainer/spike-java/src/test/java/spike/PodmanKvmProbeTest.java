@@ -113,6 +113,34 @@ class PodmanKvmProbeTest {
     run("init=true", cmd -> cmd.getHostConfig().withInit(true));
   }
 
+  /**
+   * containerDisk extraction through the Docker-compatible API: create (not start) a container from a
+   * FROM-scratch image holding /disk/disk.qcow2, stream it out with copyArchiveFromContainer, compare bytes.
+   */
+  @Test
+  void containerDiskExtraction() throws Exception {
+    String image = System.getProperty("probe.containerdisk", "localhost/vmtc-containerdisk-probe:latest");
+    Path expected = Path.of(System.getProperty("probe.containerdisk.file", "containerdisk/disk.qcow2"));
+    org.junit.jupiter.api.Assumptions.assumeTrue(Files.exists(expected), "no containerdisk probe file");
+    var client = DockerClientFactory.instance().client();
+    String digest = client.inspectImageCmd(image).exec().getId();
+    String id = client.createContainerCmd(image).withCmd("/none").exec().getId();
+    byte[] got;
+    try (var tar = new org.apache.commons.compress.archivers.tar.TarArchiveInputStream(
+        client.copyArchiveFromContainerCmd(id, "/disk/disk.qcow2").exec())) {
+      var e = tar.getNextEntry();
+      got = tar.readAllBytes();
+      String rec = "containerdisk | entry=" + e.getName() + " size=" + got.length + " imageId=" + digest
+          + " match=" + java.util.Arrays.equals(got, Files.readAllBytes(expected)) + System.lineSeparator();
+      Files.createDirectories(RESULTS.getParent());
+      Files.writeString(RESULTS, rec, java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND);
+      System.out.print("### " + rec);
+    } finally {
+      client.removeContainerCmd(id).withForce(true).exec();
+    }
+    assertTrue(java.util.Arrays.equals(got, Files.readAllBytes(expected)));
+  }
+
   /** Read-only bind mount of a file (the VM base-disk pattern). */
   @Test
   void readOnlyFileBind() throws IOException {

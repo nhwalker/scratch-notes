@@ -30,6 +30,9 @@ if [ "$MODE" = 0660 ]; then
   echo "CLI reference (--group-add keep-groups): $(login "podman run --rm --device /dev/kvm --group-add keep-groups \$IMAGE python3 -c \"$PY\"" 2>&1 | tail -1)"
 fi
 rm -f target/probe-results.txt
+# containerDisk probe image: 8 MiB qcow2 in a FROM-scratch image under /disk/
+[ -f containerdisk/disk.qcow2 ] || podman run --rm -v "$PWD/containerdisk:/w:Z" "$IMAGE" qemu-img create -q -f qcow2 /w/disk.qcow2 8M
+podman build -q -t localhost/vmtc-containerdisk-probe:latest containerdisk >/dev/null
 DOCKER_HOST="unix://$SOCK" TESTCONTAINERS_RYUK_DISABLED=true PROBE_EXPECT_KVM_MODE="$MODE" \
   PROBE_KVM_GID="$(getent group kvm | cut -d: -f3)" mvn -B -q test -Dprobe.image="$IMAGE" || echo "MVN_FAILED" >> target/probe-results.txt
 { echo "podman: $(podman --version)  scenario=$NAME mode=$MODE conf=${CONF:-none}"; cat target/probe-results.txt; } > "../../probe-$NAME.txt"

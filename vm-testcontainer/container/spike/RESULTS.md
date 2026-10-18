@@ -253,3 +253,21 @@ The Podman service was started in a login session (`sudo -iu $USER`), so `kvm` i
 | containerDisk extraction (`copyArchiveFromContainer`) | byte-exact | byte-exact | byte-exact | byte-exact | byte-exact | byte-exact |
 
 Note: in run 2 the 0660 scenarios used `sg kvm`, which makes `kvm` the *primary* group. keep-groups does not preserve a primary group, so every 0660 variant failed on 5.7.0 in that run. That was a harness artifact, fixed in run 4.
+
+## Run 5 (`39143866181`): reference-guest pipeline and containerDisk directory copy
+
+`build-guest.sh` on ubuntu-24.04 with KVM:
+
+| Step | Result |
+|------|--------|
+| Customization boot (seed: RPC filter, SELinux permissive, alsa-utils, mixer + `alsactl store`, NoCloud/None datasource, `cloud-init clean`, poweroff) | 40 s, `DNF_RC=0`, `VMTC_CUSTOMIZE_DONE` |
+| `qemu-img convert -O qcow2 -c` of the overlay | 48 s, 836 MB |
+| containerDisk (`FROM scratch`, `ADD --chown=107:107 … /disk/`) | 836 MB |
+| Boot of the result with **no seed**, `ci_spikes.py --no-seed` | QGA ready 11.2 s; **every check passes**: exec, copy, screenshots, console login (password set via QGA `chpasswd`), VNC, 2-screen recording, audio (Master `[on]` at boot), USB/PCIe/CD/vCPU/memory hot-plug |
+
+Compat probe, containerDisk extraction by copying the **`/disk/` directory**: entries `disk/` (dir) + `disk/disk.qcow2` (file), byte-exact, on Podman 4.9.3 and 5.7.0.
+
+## Sandbox-only checks (Docker 29.8)
+
+- **`tini` as PID 1:** an orphaned child is reaped, and no zombies remain.
+- **QEMU with `-qmp tcp:…:4444` plus `-qmp unix:/tmp/qmp-int.sock`:** both work at the same time. While one client holds the TCP monitor, a second TCP client gets no greeting.

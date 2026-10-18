@@ -4,7 +4,12 @@ set -euo pipefail
 mkdir -p /vm/run /vm/out
 FMT=$(qemu-img info --output=json /vm/base/disk.img | python3 -c 'import json,sys;print(json.load(sys.stdin)["format"])')
 qemu-img create -q -f qcow2 -F "$FMT" -b /vm/base/disk.img /vm/run/overlay.qcow2 20G
-if [ -w /dev/kvm ]; then ACCEL="-accel kvm -cpu host"; else ACCEL="-accel tcg -cpu max"; echo "WARN: no /dev/kvm, using TCG"; fi
+case "${VM_ACCEL:-auto}" in
+  kvm) ACCEL="-accel kvm -cpu host";;
+  tcg) ACCEL="-accel tcg -cpu max";;
+  *)   if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then ACCEL="-accel kvm -cpu host"; else ACCEL="-accel tcg -cpu max"; echo "WARN: no usable /dev/kvm, using TCG"; fi;;
+esac
+echo "ACCEL: $ACCEL"
 SEED=(); [ -f /vm/seed.iso ] && SEED=(-drive file=/vm/seed.iso,format=raw,if=none,id=seed,readonly=on -device virtio-blk-pci,drive=seed)
 # Screens: head 0 = VGA, heads 1..N-1 = secondary-vga; one VNC server per head (port 5900+i)
 DISPLAYS=()
@@ -14,7 +19,7 @@ for ((i=0; i<${VM_SCREENS:-1}; i++)); do
 done
 echo "QEMU_STARTING $(date +%s.%N)"
 exec /usr/libexec/qemu-kvm -name spikevm -nodefaults -no-user-config -M q35 $ACCEL \
-  -smp ${VM_CPUS:-2} -m ${VM_MEM_MB:-2048} \
+  -smp ${VM_CPUS:-2},maxcpus=${VM_MAXCPUS:-4} -m ${VM_MEM_MB:-2048},slots=4,maxmem=${VM_MAXMEM:-8G} \
   -display none "${DISPLAYS[@]}" \
   -qmp tcp:127.0.0.1:4444,server=on,wait=off \
   -chardev socket,id=qga0,host=127.0.0.1,port=4445,server=on,wait=off \
@@ -25,4 +30,6 @@ exec /usr/libexec/qemu-kvm -name spikevm -nodefaults -no-user-config -M q35 $ACC
   -netdev user,id=net0 -device virtio-net-pci,netdev=net0 \
   -audiodev ${VM_AUDIODEV:-none},id=snd0 -device ich9-intel-hda -device hda-duplex,audiodev=snd0 \
   -device qemu-xhci,id=xhci \
-  -device pcie-root-port,id=hp1,chassis=1 -device pcie-root-port,id=hp2,chassis=2
+  -device virtio-scsi-pci,id=scsi0 -device scsi-cd,id=cd0,bus=scsi0.0 \
+  -device pcie-root-port,id=hp1,chassis=1 -device pcie-root-port,id=hp2,chassis=2 \
+  -device pcie-root-port,id=hp3,chassis=3 -device pcie-root-port,id=hp4,chassis=4

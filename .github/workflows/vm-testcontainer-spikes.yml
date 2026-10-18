@@ -1,0 +1,154 @@
+# Phase 0 spikes for the VM Testcontainer plan (docs/vm-testcontainer/PLAN.md).
+# Runs every feature check against a Rocky 9 guest with real KVM (and TCG for comparison) using rootless Podman,
+# plus a Java Testcontainers -> Podman compat-API probe for /dev/kvm passthrough and group handling.
+name: vm-testcontainer-spikes
+
+on:
+  pull_request:
+    paths:
+      - "vm-testcontainer/**"
+      - ".github/workflows/vm-testcontainer-spikes.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  ROCKY_IMAGE: Rocky-9-GenericCloud-Base-9.8-20260525.0.x86_64.qcow2
+  ROCKY_SHA256: 92c206cc6f790c61583247eefe87890f8828420662c17cacf247cec78ab4eec8
+  SPIKE_DIR: vm-testcontainer/container/spike
+  IMAGE: localhost/vmtc-spike:media
+
+jobs:
+  vm-spikes:
+    name: vm-spikes (${{ matrix.accel }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        accel: [kvm, tcg]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Host facts
+        run: |
+          set -x
+          nproc; free -g; df -h / | tail -1; uname -r
+          ls -l /dev/kvm || true
+          podman --version; podman info --format '{{.Host.OCIRuntime.Name}} {{.Host.OCIRuntime.Version}} rootless={{.Host.Security.Rootless}} cgroup={{.Host.CgroupsVersion}} net={{.Host.NetworkBackend}}'
+          id; echo "XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-unset}"
+
+      - name: Enable /dev/kvm for the runner user (0666)
+        if: matrix.accel == 'kvm'
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+
+      - name: Build spike image (rootless podman, UBI 9.8 + EPEL + Rocky fallback)
+        run: |
+          start=$(date +%s)
+          podman build -f "$SPIKE_DIR/Containerfile.spike" --build-arg VARIANT=media -t "$IMAGE" "$SPIKE_DIR"
+          echo "build_seconds=$(( $(date +%s) - start ))" | tee -a "$GITHUB_STEP_SUMMARY"
+          podman image ls "$IMAGE"
+          podman run --rm "$IMAGE" bash -c 'rpm -qa --qf "%{NAME}-%{VERSION}-%{RELEASE}\n" | grep -E "^(qemu-kvm-core|gstreamer1|gstreamer1-plugins-(base|good|bad-free))-" | sort'
+
+      - name: Restore Rocky guest image
+        id: cache-rocky
+        uses: actions/cache@v4
+        with:
+          path: ~/vm-images
+          key: rocky-${{ env.ROCKY_SHA256 }}
+
+      - name: Download Rocky guest image
+        if: steps.cache-rocky.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/vm-images
+          curl -fsSL --retry 5 -o ~/vm-images/$ROCKY_IMAGE "https://dl.rockylinux.org/pub/rocky/9/images/x86_64/$ROCKY_IMAGE"
+
+      - name: Verify guest image checksum
+        run: echo "$ROCKY_SHA256  $HOME/vm-images/$ROCKY_IMAGE" | sha256sum -c -
+
+      - name: Generate cloud-init seed
+        run: SEED_PACKAGES=alsa-utils "$SPIKE_DIR/make-seed.sh"
+
+      - name: Run VM spikes
+        run: |
+          python3 "$SPIKE_DIR/ci_spikes.py" --engine podman --image "$IMAGE" \
+            --disk "$HOME/vm-images/$ROCKY_IMAGE" --accel "${{ matrix.accel }}" --out "out-${{ matrix.accel }}" \
+            --boot-timeout 2400
+
+      - name: Publish results
+        if: always()
+        run: cat "out-${{ matrix.accel }}/results.md" >> "$GITHUB_STEP_SUMMARY" || true
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vm-spikes-${{ matrix.accel }}
+          path: out-${{ matrix.accel }}/
+          retention-days: 14
+
+  compat-api-probe:
+    name: compat-api-probe (Testcontainers -> rootless Podman)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+
+      - name: Build spike image
+        run: podman build -f "$SPIKE_DIR/Containerfile.spike" --build-arg VARIANT=slim -t "$IMAGE" "$SPIKE_DIR"
+
+      - name: "Scenario A: /dev/kvm 0666, plain podman service"
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm && ls -l /dev/kvm
+          SOCK="$XDG_RUNTIME_DIR/podman/podman-a.sock"; mkdir -p "$(dirname "$SOCK")"
+          podman system service --time=0 "unix://$SOCK" & echo $! > /tmp/svc.pid; sleep 3
+          cd vm-testcontainer/spike-java
+          DOCKER_HOST="unix://$SOCK" TESTCONTAINERS_RYUK_DISABLED=true PROBE_EXPECT_KVM_MODE=0666 \
+            mvn -B -q test -Dprobe.image="$IMAGE" || echo "MVN_FAILED" >> target/probe-results.txt
+          mv target/probe-results.txt ../../probe-A.txt
+          kill "$(cat /tmp/svc.pid)"
+
+      - name: "Scenario B: /dev/kvm 0660 root:kvm, podman service started with kvm group"
+        run: |
+          sudo rm -f /etc/udev/rules.d/99-kvm4all.rules
+          sudo chown root:kvm /dev/kvm && sudo chmod 0660 /dev/kvm && ls -l /dev/kvm
+          sudo usermod -aG kvm "$USER"
+          KVM_GID=$(getent group kvm | cut -d: -f3)
+          SOCK="$XDG_RUNTIME_DIR/podman/podman-b.sock"
+          sg kvm -c "podman system service --time=0 unix://$SOCK" & echo $! > /tmp/svc.pid; sleep 3
+          echo "CLI reference (no group-add):"; sg kvm -c "podman run --rm --device /dev/kvm $IMAGE python3 -c \"import os; os.open('/dev/kvm', os.O_RDWR); print('CLI_OPEN_OK')\"" || true
+          echo "CLI reference (--group-add keep-groups):"; sg kvm -c "podman run --rm --device /dev/kvm --group-add keep-groups $IMAGE python3 -c \"import os; os.open('/dev/kvm', os.O_RDWR); print('CLI_KEEPGROUPS_OPEN_OK')\"" || true
+          cd vm-testcontainer/spike-java
+          DOCKER_HOST="unix://$SOCK" TESTCONTAINERS_RYUK_DISABLED=true PROBE_KVM_GID="$KVM_GID" \
+            mvn -B -q test -Dprobe.image="$IMAGE" || echo "MVN_FAILED" >> target/probe-results.txt
+          mv target/probe-results.txt ../../probe-B.txt
+          kill "$(cat /tmp/svc.pid)" || true
+
+      - name: Publish results
+        if: always()
+        run: |
+          for f in probe-A.txt probe-B.txt; do
+            echo "### $f" >> "$GITHUB_STEP_SUMMARY"; echo '```' >> "$GITHUB_STEP_SUMMARY"
+            cat "$f" >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || echo missing >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          done
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compat-api-probe
+          path: probe-*.txt
+          retention-days: 14

@@ -7,6 +7,7 @@ Usage:
   vmctl.py exec <timeout_s> <argv...>    guest-exec + poll guest-exec-status; prints exit/stdout/stderr
   vmctl.py put <local> <guest_path>      guest-file-write
   vmctl.py get <guest_path> <local>      guest-file-read
+  vmctl.py exec-json <timeout_s> <argv...>  like exec, prints {"exit":..,"out":..,"err":..} (exit=null on timeout)
 """
 import base64, json, socket, sys, time
 
@@ -76,6 +77,18 @@ def main(a):
                 return 0 if st.get("exitcode") == 0 else 2
             time.sleep(0.2)
         print("TIMEOUT"); return 1
+    elif cmd == "exec-json":
+        c = qga(); deadline = time.time() + float(a[1])
+        pid = c.call({"execute": "guest-exec", "arguments": {"path": a[2], "arg": a[3:], "capture-output": True}})["pid"]
+        while time.time() < deadline:
+            st = c.call({"execute": "guest-exec-status", "arguments": {"pid": pid}})
+            if st["exited"]:
+                print(json.dumps({"exit": st.get("exitcode"), "signal": st.get("signal"),
+                                  "out": base64.b64decode(st.get("out-data", "")).decode(errors="replace"),
+                                  "err": base64.b64decode(st.get("err-data", "")).decode(errors="replace")}))
+                return 0
+            time.sleep(0.2)
+        print(json.dumps({"exit": None, "out": "", "err": "TIMEOUT"})); return 1
     elif cmd == "put":
         c = qga(); data = open(a[1], "rb").read()
         h = c.call({"execute": "guest-file-open", "arguments": {"path": a[2], "mode": "w"}})

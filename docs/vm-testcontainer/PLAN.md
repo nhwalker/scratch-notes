@@ -284,12 +284,22 @@ Legend:
 | containerDisk extraction (`createContainerCmd` + `copyArchiveFromContainerCmd`) is byte-exact on Docker 29.8, Podman 4.9.3 and 5.7.0 when copying a known file path. Copying the `/disk/` **directory** yields entries `disk/` (dir) + `disk/<file>` (file) on Docker 29.8 | [V] |
 | Directory copy of `/disk/` on Podman 4.9.3 and 5.7.0 gives the same `disk/` (dir) + `disk/<file>` (file) entries, byte-exact | [V] (run 5) |
 | `ExecConfig` (`execInContainer(ExecConfig)` with `envVars`) and `RemoteDockerImage(DockerImageName)` exist in testcontainers-2.0.5.jar | [D] (javap) |
+| `GenericContainer.addFileSystemBind(String, String, BindMode, SelinuxContext)` exists in 2.0.5 (void); the `withFileSystemBind` overloads take no `SelinuxContext`. `HostConfig.withPublishAllPorts(Boolean)`, `withAnnotations(Map)`, `withDevices(...)`, `withPortBindings(...)` exist in docker-java-api 3.7.1 | [V] (javap) |
 | `GenericContainer.doStart()` and `tryStart()` wrap any failure from `configure()`, the wait strategy and `containerIsStarted` in `ContainerLaunchException` (javap of 2.0.5) | [V] |
 | `PullPolicy.alwaysPull()`, `PullPolicy.defaultPolicy()` and `RemoteDockerImage.withImagePullPolicy(ImagePullPolicy)` exist in 2.0.5; the default policy pulls only when the image is not cached locally | [V] (javap) / [D] |
 | `pullImageCmd(ref).withAuthConfig(new AuthConfig().withRegistryAddress(registry).withUsername(u).withPassword(p))` pulls a private image from the htpasswd TLS registry with **no** stored credentials (no `config.json`, no `podman login`), rootless Podman 4.9.3. With a wrong password, and also for the no-credentials `RemoteDockerImage` path, docker-java throws `com.github.dockerjava.api.exception.UnauthorizedException` (`Status 401: {"message":"unauthorized: authentication required"}`) as the top-level exception | [V] (run 16) |
 | A JVM started from the GitHub Actions shell does **not** have the `kvm` supplementary group even after `usermod -aG kvm`, so `Files.isReadable/isWritable(/dev/kvm)` are false for a `0660 root:kvm` device; the same JVM started through `sudo -iu $USER` has the group and sees the device as readable and writable (Podman 4.9.3 and 5.7.0 runners) | [V] (run 16) |
 
-### 3.7 Image downloads (R13)
+### 3.7 Test tooling (JUnit, Allure)
+
+| Fact | Status |
+|------|--------|
+| JUnit 5.12: an extension declared with `@ExtendWith` **on a `@Repeatable` custom annotation** is registered for a method whether the annotation appears once or several times (the repeated form is compiled into the container annotation, which carries no `@ExtendWith`); the extension runs exactly once per test method even when the class also carries the annotation; `AnnotationSupport.findRepeatableAnnotations` returns every repetition | [V] (`spike-oras` `RepeatableExtendWithTest`, `RepeatableContainerOnlyTest`) |
+| Allure Report 2.46.1 renders images, `video/webm`/`video/mp4`, text, HTML, CSV, JSON/XML/YAML and URI lists inline; **no audio type** is rendered (download link only). `allure generate --single-file` exists | [V] (docs page, `allure help generate`) |
+| Allure Java 2.35.5: `Allure.addAttachment(String name, String type, InputStream, String ext)`, `Allure.epic/feature/story/label/link/description`, `@LabelAnnotation` exist; `allure-jupiter` 2.35.5 declares JUnit 5.10.3 runtime deps; `allure-jupiter` 3.0.0 declares JUnit 6.1.0 | [V] (javap, poms) |
+| Testcontainers 2.0.5 + docker-java 3.7.1: `UnauthorizedException` on 401 pulls; `addFileSystemBind(..., SelinuxContext)`; `HostConfig.withPublishAllPorts(Boolean)` | [V] (run 16, javap) |
+
+### 3.8 Image downloads (R13)
 
 | Fact | Status |
 |------|--------|
@@ -447,7 +457,7 @@ Run each check inside every built image (`<engine> run --rm --entrypoint /bin/ba
 7. Repository configuration [REQ-IMG-02]: `grep -h '^priority=' /etc/yum.repos.d/ubi.repo | sort -u` prints only `priority=10`; `/etc/yum.repos.d/epel.repo` contains `priority=20`; every section of `/etc/yum.repos.d/rocky.repo` has `priority=90` and the `excludepkgs` line of Appendix A.2; every `.repo` file the build added has `gpgcheck=1`.
 8. **slim only:** `! command -v gst-launch-1.0` [REQ-IMG-03]
 9. `. /etc/os-release && [ "$ID" = rhel ] && [ "$VERSION_ID" = <tag of ${UBI_IMAGE}, e.g. 9.8> ]` [REQ-IMG-01]
-10. **[U]** Resolution order [REQ-IMG-02]: `dnf -q repoquery --installed --qf '%{from_repo}' qemu-kvm-core` prints `rocky-fallback-appstream`; `tini` → `epel9`; `bash` → a repo id starting with `ubi-9-`. If `%{from_repo}` is not supported by the image's dnf, use `dnf -q repoquery --latest-limit 1 --qf '%{repoid}' <pkg>` instead and record the change in PLAN-STEPS.md §D.
+10. Resolution order [REQ-IMG-02]: `dnf -q repoquery --installed --qf '%{from_repo}' <pkg>` prints `rocky-fallback-appstream` for `qemu-kvm-core`, `epel9` for `tini`, and a repo id starting with `ubi-9-` for `jq`. Only packages installed by the Containerfile's own `dnf install` are meaningful here: for packages that came with the base image layer (e.g. `bash`) dnf 4.14 prints an opaque transaction id instead of a repo **[V]** (checked on `rockylinux:9`, dnf 4.14.0).
 
 ---
 
@@ -729,7 +739,7 @@ public class QemuVmContainer extends GenericContainer<QemuVmContainer> {
 **Start sequence** (`configure()`, `containerIsStarting`, `containerIsStarted`):
 
 1. **Image:** resolve the `VmImage` to a cache file (§9.3), unless it is `BakedImage`.
-2. **Bind** the cache file read-only at `/vm/base/disk.img` with `withFileSystemBind(hostPath, "/vm/base/disk.img", BindMode.READ_ONLY, selinux)`, where `selinux` is `SelinuxContext.SHARED` when `/sys/fs/selinux/enforce` exists and contains `1`, else `SelinuxContext.NONE` [D]. Only cache files are ever bound (§9.3.2).
+2. **Bind** the cache file read-only at `/vm/base/disk.img` with `addFileSystemBind(hostPath, "/vm/base/disk.img", BindMode.READ_ONLY, selinux)` (the four-argument form is `addFileSystemBind`, not `withFileSystemBind`, in 2.0.5 **[V]** javap), where `selinux` is `SelinuxContext.SHARED` when `/sys/fs/selinux/enforce` exists and contains `1`, else `SelinuxContext.NONE`. Only cache files are ever bound (§9.3.2).
 3. **KVM:** `KvmDecision.decide(mode, detector)` (§9.6); apply `HostConfig.withDevices(...)` and, if needed, `withAnnotations(...)` in `withCreateContainerCmdModifier`.
 4. **Ports:** `withExposedPorts(4444, 4445, 5900, …, 5900+n-1)`. In the create-cmd modifier: `hostConfig.withPublishAllPorts(false)` (rule l) and replace `PortBindings` with `PortBinding(Ports.Binding.bindIp(addr), ExposedPort.tcp(p))` for each port, which keeps a random host port. `addr` is `127.0.0.1` for 4444 and 4445, and the configured VNC address for VNC ports.
 5. **Labels:** `${LABEL_PREFIX}.managed=true`, `${LABEL_PREFIX}.version=<VmtcConstants.VERSION>`, `${LABEL_PREFIX}.session=<UUID created once per JVM>`, `${LABEL_PREFIX}.created=<epoch seconds>`.
@@ -799,7 +809,7 @@ public sealed interface VmImage permits VmImage.PathImage, VmImage.UrlImage, VmI
 
 #### 9.3.1 Cache (`VmImageCache`)
 
-- **Instance:** `new VmImageCache(Path root)`; `QemuVmContainer` builds one from the `cacheDir` override. **Root:** `<cacheDir>/images/`. Entries are `<key>.img`, side files `<key>.meta.json` (HTTP revalidation data) and `<key>.lock`.
+- **Instance:** `new VmImageCache(Path root)`; `QemuVmContainer` builds one from the `cacheDir` override. **`Path resolve(VmImage image, DockerClient client)`** is the public entry point that materialises any non-baked source and returns the cache file (`QemuVmContainer.configure()` calls it; the `:it` warm-up calls it directly). **Root:** `<cacheDir>/images/`. Entries are `<key>.img`, side files `<key>.meta.json` (HTTP revalidation data) and `<key>.lock`.
 - **Concurrency (rule k):** a writer first takes the per-key in-JVM lock (`ConcurrentHashMap<String, ReentrantLock>`), then `FileChannel.lock()` on `<key>.lock` (blocks against other JVMs), then re-checks whether `<key>.img` exists. It writes `<key>.tmp-<pid>-<nanotime>` and finishes with `Files.move(…, ATOMIC_MOVE)`. Readers only check for `<key>.img`.
 - **`fromPath`:**
   - Reject with `IllegalArgumentException("qcow2 image has a backing file: <name>")` when `Qcow2Header.backingFile(file)` is non-empty. `Qcow2Header` reads the 104-byte header: magic `QFI\xfb` at offset 0; `backing_file_offset` = big-endian uint64 at offset 8; `backing_file_size` = big-endian uint32 at offset 16; a non-zero offset means a backing file, whose name is the UTF-8 bytes at that offset [D, qcow2 spec]. Files without the magic are treated as raw.
@@ -1282,7 +1292,7 @@ public final class VmtcConstants {
 **Every test module** (`:lib`, `:junit5`, `:it`):
 
 - `testImplementation project(':test-support')` (plus `allure-jupiter` transitively; `:it` adds `junit-platform-testkit` for T34).
-- `src/test/resources/allure.properties`: `allure.results.directory=build/allure-results` and `allure.link.requirement.pattern=${REQ_DOC_URL}#{}` (so `Allure.link(id, "requirement", anchor)` resolves).
+- `src/test/resources/allure.properties`: `allure.results.directory=build/allure-results`. No link pattern is needed: `RequirementExtension` passes the complete URL to `Allure.link(name, type, url)`.
 - No AspectJ agent: only the Allure runtime API is used (`Allure.addAttachment`, `Allure.step`, labels, links), never `@Step`/`@Attachment`.
 - Attachments go through `Evidence` (test-support), which calls `Allure.addAttachment(name, type, InputStream, extension)`.
 

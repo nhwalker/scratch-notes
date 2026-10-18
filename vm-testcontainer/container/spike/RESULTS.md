@@ -338,3 +338,9 @@ Observed on ubuntu-24.04 (Podman 4.9.3) for B and C and on ubuntu-26.04 (Podman 
 
 - Server sends headers + 4 KB then stalls: a watchdog closing the `ofInputStream()` body after 2 s of no progress makes the blocked `read()` throw `IOException: closed` at 2.0 s.
 - Server never sends headers: `HttpRequest.timeout(2 s)` → `java.net.http.HttpTimeoutException` at 2.0 s.
+
+## Local checks for the test-tooling design (2026-10-18)
+
+- **JUnit 5.12.2, `@ExtendWith` on a `@Repeatable` annotation** (`spike-oras` `RepeatableExtendWithTest`, `RepeatableContainerOnlyTest`): the extension is registered for a method annotated once and for a method annotated twice (container form without `@ExtendWith`), runs exactly once per method even with a class-level annotation present, and `AnnotationSupport.findRepeatableAnnotations` returns every repetition (`[M-02, M-03, CLASS-01]`).
+- **dnf 4.14.0 on `rockylinux:9`:** `dnf -q repoquery --installed --qf '%{from_repo}' tar` (installed in the container) prints `baseos`; the same for `bash` (base image layer) prints an opaque id (`e8f61db5…`). Use only Containerfile-installed packages for the repo-order check.
+- **Testcontainers 2.0.5 / docker-java 3.7.1 signatures (javap):** `addFileSystemBind(String,String,BindMode,SelinuxContext)` exists (void); `withFileSystemBind` has no `SelinuxContext` overload; `HostConfig.withPublishAllPorts(Boolean)`, `withAnnotations(Map)`, `withDevices`, `withPortBindings` exist; `com.github.dockerjava.api.exception.UnauthorizedException` exists.

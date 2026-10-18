@@ -153,7 +153,7 @@
 - [ ] `AllureEnvironment.write(Path resultsDir, Map<String,String>)` → `environment.properties`.
 - [ ] `RequirementsCheck` (`main`): REQUIREMENTS.md §3.4 steps 1–5; arguments `<REQUIREMENTS.md> <requireFullCoverage:true|false> <reportFile> <sourceRoot>...`.
 - [ ] Root task `checkRequirementTraceability` = `JavaExec` of `RequirementsCheck` with the four test source roots of §3.4 and `traceabilityRequireFullCoverage` from `gradle.properties`.
-- [ ] `src/test/resources/allure.properties` in `:lib`, `:junit5`, `:it` (create the directories now): `allure.results.directory=build/allure-results`, `allure.link.requirement.pattern=<reqDocUrl>#{}`.
+- [ ] `src/test/resources/allure.properties` in `:lib`, `:junit5`, `:it` (create the directories now): `allure.results.directory=build/allure-results`.
 - [ ] Add `@Requirement("REQ-BLD-01")` to U5 (step 1.3).
 - [ ] Unit tests for the catalog in `test-support/src/test/java`: every row of the real REQUIREMENTS.md parses; feature-code mismatch and malformed rows fail; anchor computation (`#### Feature EXEC: Run commands` → `feature-exec-run-commands`).
 
@@ -186,10 +186,10 @@
 
 ### Step 1.8 — Image build, verification and push tasks
 - [ ] In `images/build.gradle`: `buildRunnerSlim`, `buildRunnerMedia`, `verifyRunnerImages`, `pushImages` per PLAN.md §11.2 (engine from `-PcontainerEngine`, default `podman`; `-PnoCache=true` support; declare inputs = `images/runner/**`, outputs = an image-ID marker file under `build/`).
-- [ ] `verifyRunnerImages` runs checks 1–10 of PLAN.md §6.4 in each image (`<engine> run --rm --entrypoint /bin/bash <image> -c '<check>'`), checks 5 and 6 on the host. Check 10 is **[U]**: if `%{from_repo}` is unsupported, switch to the documented fallback and log it in §D.
+- [ ] `verifyRunnerImages` runs checks 1–10 of PLAN.md §6.4 in each image (`<engine> run --rm --entrypoint /bin/bash <image> -c '<check>'`), checks 5 and 6 on the host. Check 10 queries only packages the Containerfile installed (`qemu-kvm-core`, `tini`, `jq`); base-layer packages give an opaque id (PLAN.md §6.4).
 
 **Spec:** PLAN.md §6.1, §6.4, §11.2
-**Verify:** `./gradlew :images:verifyRunnerImages` succeeds and prints each check's result; `podman images` shows both tags; `./gradlew :images:pushImages` reports the task as `SKIPPED` without `-PpushImages=true`. Build time per image is in the order of a minute (PLAN.md §12.2; log large differences). Record the check-10 outcome in §D.
+**Verify:** `./gradlew :images:verifyRunnerImages` succeeds and prints each check's result; `podman images` shows both tags; `./gradlew :images:pushImages` reports the task as `SKIPPED` without `-PpushImages=true`. Build time per image is in the order of a minute (PLAN.md §12.2; log large differences).
 **Requirements:** REQ-IMG-01, REQ-IMG-02, REQ-IMG-03, REQ-IMG-04, REQ-IMG-05 (check part)
 
 ### Step 1.9 — Smoke-test the entrypoint by hand (no Java yet)
@@ -317,7 +317,7 @@
 **Requirements:** REQ-GUEST-03, REQ-GUEST-06 (unit part) (U10)
 
 ### Step 1.20 — `QemuVmContainer`: configure, wait strategy, `start()` override
-- [ ] `configure()` per PLAN.md §9.2 steps 1–6: image resolution (`switch` over the sealed `VmImage`), bind via `withFileSystemBind(..., SelinuxContext)`, KVM decision → devices/annotations, ports with `PublishAllPorts=false` (rule l), labels, env (§7.1), seed files.
+- [ ] `configure()` per PLAN.md §9.2 steps 1–6: image resolution (`VmImageCache.resolve`, a `switch` over the sealed `VmImage`), bind via `addFileSystemBind(..., BindMode.READ_ONLY, SelinuxContext)`, KVM decision → devices/annotations, ports with `PublishAllPorts=false` (rule l), labels, env (§7.1), seed files.
 - [ ] Start-time validation (`withVmImage` present, `maxmem ≥ mem`, override parsing).
 - [ ] Runner variant detection from the image label for the `DockerImageName` constructor (missing → SLIM + WARN).
 - [ ] `internal.VmWaitStrategy` implementing the §9.2 step 7 table with `StartupMessages`.
@@ -344,7 +344,7 @@
 ### Step 1.22 — Integration-test module and `VmIT`
 - [ ] `it/build.gradle`: depends on `:lib`, `:test-support`, `:junit5` (from step 6.2 on), JUnit, AssertJ, slf4j-simple, `junit-platform-testkit` (for T34 later); the `Test` tasks of PLAN.md §11.1 (`integrationTest`, `compatTest`, `ociAuthTestA..D` + `ociAuthTest`) with `failOnNoDiscoveredTests = false`, the tag mapping (`excludeTags`), `providers.gradleProperty` forwarding, `dependsOn ':images:verifyRunnerImages', ':images:buildGuestDisk'`, and the two `*.it.*Qcow2` system properties.
 - [ ] `it/src/test/java/…/TestImages.guest()` → `VmImage.fromPath(Path.of(System.getProperty("<syspropPrefix>.it.guestQcow2")))` for now.
-- [ ] `VmIT` base class: `@BeforeAll` warm-up (`TestImages.guest()` resolved once through a throwaway `QemuVmContainer` **configure-only** path or a direct `VmImageCache` call, so the cache is populated); `register(container)`; `@AfterEach` attaches the standard evidence (REQUIREMENTS.md §3.3, via `Warnings.listen` started in `@BeforeEach`) and stops registered containers; on failure also one screenshot per screen (best effort).
+- [ ] `VmIT` base class: `@BeforeAll` warm-up (`new VmImageCache(cacheDir).resolve(TestImages.guest(), DockerClientFactory.instance().client())` once, so the cache is populated before any timed start); `register(container)`; `@AfterEach` attaches the standard evidence (REQUIREMENTS.md §3.3, via `Warnings.listen` started in `@BeforeEach`) and stops registered containers; on failure also one screenshot per screen (best effort).
 - [ ] `VmEvidence` (`screenshot`, `audio` with the waveform/spectrum PNG renderer, `inspect`, `qmp`) per REQUIREMENTS.md §3.3. The audio analysis (RMS, dominant frequency by DFT over ≤ 65536 samples) lives here so T11 and the evidence share it.
 
 **Spec:** PLAN.md §11.1; REQUIREMENTS.md §3.3

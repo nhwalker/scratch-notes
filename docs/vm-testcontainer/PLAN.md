@@ -1457,7 +1457,7 @@ The step-by-step checklist for each milestone is [PLAN-STEPS.md](PLAN-STEPS.md).
 | L4 | No H.264/AV1 encoders | WebM/VP8 only | accept |
 | L5 | Red Hat: direct qemu-kvm and TCG unsupported | no vendor support | accept for test infrastructure |
 | R1 | Rocky RPMs on UBI could conflict in future point releases | build break | pinned `${ROCKY_RELEASE}`; build-time guard; weekly scheduled CI |
-| R2 | **Licensing/redistribution** of an image mixing UBI with Rocky/EPEL content | may block publishing images publicly | **not assessed; needs a legal/policy decision before `pushImages` to a public registry** |
+| R2 | **Licensing/redistribution** of an image mixing UBI with Rocky/EPEL content | may block publishing images publicly | **Facts gathered 2026-10-18 (not legal advice):** <ul><li>UBI EULA (March 2019 text) §1 grants a perpetual licence to the UBI "Programs"; §2 permits distributing images that include the Red Hat trademark **but** "If you modify the Red Hat Universal Base Image(s), you must remove any Red Hat trademark(s) prior to any subsequent distribution", and requires the unmodified EULA to be included in all derived images.</li><li>Red Hat's UBI FAQ: "Can I add non-UBI RPMs to a UBI image and still redistribute the resultant container image on a non-Red Hat platform?" → "**No**, only Red Hat packages assigned to the UBI EULA can be redistributed"; "Can I add non-UBI packages if something is missing from UBI?" → "Yes, but not if you want to freely redistribute the images." Distribution to any registry is otherwise allowed.</li><li>Rocky Linux: project additions under BSD-3-Clause, components under their own FOSS licences; packages themselves are redistributable; the Rocky name/logo need written permission beyond compatibility statements.</li><li>EPEL: 100 % FLOSS, Fedora packaging guidelines, freely redistributable.</li></ul> **Consequence:** the runner image as designed (UBI + Rocky QEMU + EPEL tini) is redistributable as far as Rocky/EPEL are concerned, but Red Hat's own FAQ says it is **not** redistributable under the UBI EULA, and any modified UBI image must drop Red Hat trademarks. A public registry therefore needs a decision: private registry only, or a non-UBI base (which contradicts R2 as originally stated). Decision pending (PLAN-STEPS.md §D) |
 | R3 | SELinux-enforcing hosts (Fedora/RHEL): `:z` relabel, `container_use_devices` for `/dev/kvm` | untestable on GitHub runners (AppArmor) | acceptance run on a Fedora/RHEL host before 1.0 [U] |
 | R4 | `/dev/kvm` 0660 hosts on Podman < 5.7 | needs user config | §9.6 detection and message [V] |
 | R5 | UEFI firmware paths | — | T22 |
@@ -1479,6 +1479,7 @@ The step-by-step checklist for each milestone is [PLAN-STEPS.md](PLAN-STEPS.md).
 7. JUnit tags cannot be set dynamically through a meta-annotation, so `@Requirement` does not create JUnit tags; this is by design (REQUIREMENTS.md §3.1).
 4. `${ART_JUNIT}` is optional.
 5. Publishing images publicly depends on R2.
+8. **The Maven publishing destination is undecided** (Maven Central / GitHub Packages / internal). The plan configures `maven-publish` for `publishToMavenLocal` only; PLAN-STEPS.md step 6.7 is a placeholder until the decision is made.
 
 ---
 

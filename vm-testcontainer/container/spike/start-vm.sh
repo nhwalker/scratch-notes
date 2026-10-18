@@ -18,10 +18,20 @@ for ((i=0; i<${VM_SCREENS:-1}; i++)); do
   [ $i -eq 0 ] && DEV=VGA || DEV=secondary-vga
   DISPLAYS+=(-device $DEV,id=video$i -vnc ${VNC_BIND:-127.0.0.1}:$i,id=vnc$i,display=video$i${VNC_OPTS-,share=force-shared})
 done
+# Firmware: VM_FIRMWARE=uefi -> OVMF pflash pair (plan §8.4); default BIOS (SeaBIOS)
+FW=()
+if [ "${VM_FIRMWARE:-bios}" = uefi ]; then
+  cp /usr/share/edk2/ovmf/OVMF_VARS.fd /vm/run/OVMF_VARS.fd
+  FW=(-drive if=pflash,format=raw,unit=0,readonly=on,file=/usr/share/edk2/ovmf/OVMF_CODE.fd
+      -drive if=pflash,format=raw,unit=1,file=/vm/run/OVMF_VARS.fd)
+  echo "FIRMWARE: uefi (OVMF_CODE.fd + writable OVMF_VARS.fd copy)"
+else
+  echo "FIRMWARE: bios"
+fi
 echo "QEMU_STARTING $(date +%s.%N)"
 exec /usr/libexec/qemu-kvm -name spikevm -nodefaults -no-user-config -M q35 $ACCEL \
   -smp ${VM_CPUS:-2},maxcpus=${VM_MAXCPUS:-4} -m ${VM_MEM_MB:-2048},slots=4,maxmem=${VM_MAXMEM:-8G} \
-  -display none "${DISPLAYS[@]}" \
+  -display none "${DISPLAYS[@]}" "${FW[@]}" \
   -qmp tcp:127.0.0.1:4444,server=on,wait=off \
   -chardev socket,id=qga0,host=127.0.0.1,port=4445,server=on,wait=off \
   -device virtio-serial-pci -device virtserialport,chardev=qga0,name=org.qemu.guest_agent.0 \

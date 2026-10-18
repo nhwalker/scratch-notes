@@ -31,6 +31,7 @@ ap.add_argument("--network-host", action="store_true")
 ap.add_argument("--skip", default="")
 ap.add_argument("--boot-timeout", type=float, default=1500)
 ap.add_argument("--no-seed", action="store_true", help="boot without cloud-init seed (pre-customized guest)")
+ap.add_argument("--firmware", choices=["bios", "uefi"], default="bios", help="VM_FIRMWARE for start-vm.sh (plan §8.4, T22)")
 args = ap.parse_args()
 os.makedirs(args.out, exist_ok=True)
 SKIP = set(x for x in args.skip.split(",") if x)
@@ -108,7 +109,8 @@ def copy_out(path_in_container, name=None):
 # ---------------------------------------------------------------- start container
 sh([E, "rm", "-f", N], check=False)
 run = [E, "run", "-d", "--init", "--name", N,
-       "-e", f"VM_SCREENS={args.screens}", "-e", f"VM_ACCEL={args.accel}", "-e", "VNC_OPTS=,share=force-shared"]
+       "-e", f"VM_SCREENS={args.screens}", "-e", f"VM_ACCEL={args.accel}", "-e", f"VM_FIRMWARE={args.firmware}",
+       "-e", "VNC_OPTS=,share=force-shared"]
 if args.accel == "kvm":
     run += ["--device", "/dev/kvm"]
 if args.network_host:
@@ -167,6 +169,17 @@ def c_exec():
     assert (r2["exit"], r2["out"], r2["err"]) == (3, "out\n", "err\n"), r2
     ctx = gsh("id -Z")["out"].strip()
     return f"uname -m ok; exit/stdout/stderr ok; guest-exec SELinux context={ctx}"
+
+
+@check("firmware")
+def c_fw():
+    """Plan T22 / REQ-LIFE-09: under UEFI the guest exposes /sys/firmware/efi; under BIOS it must not."""
+    r = gexec("/usr/bin/test", "-d", "/sys/firmware/efi")
+    efi = r["exit"] == 0
+    want = args.firmware == "uefi"
+    assert efi == want, f"/sys/firmware/efi present={efi} but firmware={args.firmware}; test exit={r['exit']}"
+    detail = gsh("ls /sys/firmware/efi/efivars 2>/dev/null | head -3; cat /sys/firmware/efi/fw_platform_size 2>/dev/null")["out"].strip().replace("\n", " ") if efi else "no /sys/firmware/efi"
+    return f"firmware={args.firmware}: efi={efi}; {detail}"
 
 
 @check("file_copy")
@@ -370,7 +383,7 @@ def c_mem():
     return f"MemTotal {m0}->{memtotal()} kB after {t:.1f}s (auto-online)"
 
 
-for fn in [c_accel, c_qga, c_ci, c_exec, c_copy, c_shot, c_keys, c_vnc, c_record, c_audio,
+for fn in [c_accel, c_qga, c_ci, c_exec, c_fw, c_copy, c_shot, c_keys, c_vnc, c_record, c_audio,
            c_usb, c_pcie_disk, c_pcie_nic, c_cd, c_cpu, c_mem]:
     fn()
 
@@ -381,11 +394,11 @@ for f in ("/vm/out/serial.log",):
     except Exception:
         pass
 open(os.path.join(args.out, "container.log"), "w").write(sh([E, "logs", N], check=False).stdout)
-env = {"engine": sh([E, "--version"], check=False).stdout.strip(), "accel": args.accel, "boot": boot,
+env = {"engine": sh([E, "--version"], check=False).stdout.strip(), "accel": args.accel, "firmware": args.firmware, "boot": boot,
        "host_kernel": os.uname().release, "nproc": os.cpu_count()}
 json.dump({"env": env, "results": results}, open(os.path.join(args.out, "results.json"), "w"), indent=2)
 with open(os.path.join(args.out, "results.md"), "w") as md:
-    md.write(f"### VM spikes: accel={args.accel}\n\n`{json.dumps(env)}`\n\n| Check | Status | Secs | Detail |\n|---|---|---|---|\n")
+    md.write(f"### VM spikes: accel={args.accel} firmware={args.firmware}\n\n`{json.dumps(env)}`\n\n| Check | Status | Secs | Detail |\n|---|---|---|---|\n")
     for r in results:
         d = str(r["detail"]).replace("\n", " ").replace("|", "\\|")[:400]
         md.write(f"| {r['check']} | {r['status']} | {r['secs']} | {d} |\n")

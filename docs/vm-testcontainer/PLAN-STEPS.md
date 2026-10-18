@@ -633,11 +633,12 @@
 
 **Verify:** the README's quick-start code block, pasted into a fresh `:it` test, compiles and passes T2's criteria.
 
-### Step 6.7 — Publish (only when decided)
-- [ ] `pushImages` with `-PpushImages=true` to the chosen registry — **only** after R2 is resolved for public registries.
-- [ ] Publish the Maven artifacts per the target repository's release process.
+### Step 6.7 — Publish (blocked: destination not yet chosen)
+- [ ] **Do not publish.** The Maven publishing destination (Maven Central, GitHub Packages, an internal repository) has not been decided (PLAN.md §16 item 8). Until it is, `publishToMavenLocal` is the only publishing task that runs, and `pushImages` stays guarded by `-PpushImages=true`.
+- [ ] When the destination is decided, add a §D entry and extend this step with: the `publishing { repositories { … } }` block, credentials via CI secrets, and (Maven Central only) POM metadata, GPG signing and sources/javadoc jars.
+- [ ] `pushImages` to a **public** registry additionally needs R2 resolved (PLAN.md §15).
 
-**Verify:** `podman pull` of the three image tags and resolution of `${GROUP_ID}:${ART_LIB}:${VERSION}` from the chosen repository succeed on a clean machine.
+**Verify:** the release head still passes the §6.G gate; nothing has been published anywhere.
 
 ### 6.G — Phase 6 gate (done)
 - [ ] All CI jobs green on the release head: `unit`, `integration` ×3, `compat` ×2, `oci-auth`.

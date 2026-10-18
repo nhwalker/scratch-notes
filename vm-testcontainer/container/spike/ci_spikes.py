@@ -284,7 +284,7 @@ def c_record():
         assert abs(secs - wall) < 3, f"screen{i} duration {secs} vs wall {wall:.1f}"
         copy_out(f"/vm/out/screen{i}.webm")
         det.append(f"screen{i}: {secs:.1f}s (wall {wall:.1f}s) {wh.group(1)}x{wh.group(2)} stop={stop_ms}ms")
-    return "; ".join(det)
+    return "; ".join(det + modeset_wait)
 
 
 @check("audio_capture")

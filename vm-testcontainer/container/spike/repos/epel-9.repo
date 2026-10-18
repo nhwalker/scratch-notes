@@ -1,0 +1,6 @@
+[epel9]
+name=EPEL 9
+baseurl=https://dl.fedoraproject.org/pub/epel/9/Everything/x86_64/
+gpgcheck=1
+gpgkey=https://dl.fedoraproject.org/pub/epel/RPM-GPG-KEY-EPEL-9
+priority=20

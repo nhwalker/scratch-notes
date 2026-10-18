@@ -99,7 +99,7 @@ Legend: **V** = verified (source or test), **L** = likely but not tested, **U** 
 | `wavcapture` HMP command | Works through QMP `human-monitor-command` and produced a valid WAV file | V |
 | Sound devices | `ich9-intel-hda`, `intel-hda`, `hda-duplex`, `hda-output`, `hda-micro` | V |
 | `usb-audio` | **Not available** (RHEL device config) | V |
-| `virtio-sound` | Strings are present in the binary, but it is not listed as a sound device | U |
+| `virtio-sound` | Not available (`virtio-sound-pci` absent from `-device help`) | V |
 | EPEL 9 QEMU | No full QEMU, only `qemu-sanity-check` | V |
 | EPEL 9 ffmpeg | `ffmpeg-free` 7.1.5 is available; it probably needs CRB for dependencies | V / L |
 | QGA commands | `guest-exec`, `guest-exec-status`, `guest-file-open/read/write/close` exist in 10.1 | V |
@@ -115,6 +115,11 @@ Legend: **V** = verified (source or test), **L** = likely but not tested, **U** 
 | Podman `--mount type=artifact` | Since 5.5.0; stable artifacts since 5.6.0 | V |
 | Podman in Rocky 9.8 | 5.8.x | V |
 | KubeVirt containerDisk | Disk goes in `/disk/` inside the image, readable by UID 107; qcow2 is recommended | V |
+| **Spike #1: UBI 9.8 + EPEL + Rocky 9.8 install** | **PASS.** No UBI package replaced; no `rocky-release` installed; `rpm -Va` clean. See `vm-testcontainer/container/spike/RESULTS.md` | V |
+| Default machine type | `pc-i440fx-rhel7.6.0`, which is deprecated, so always pass `-M q35` | V |
+| `virtio-vga` / `virtio-sound-pci` | **Not present** in the RHEL build; `VGA` and `bochs-display` are | V |
+| Netdev | `user` (slirp) and `passt` both available | V |
+| ffmpeg-free encoders | VP8, VP9, AV1, MJPEG, Opus and Vorbis present; H.264 is a stub (`noopenh264`) | V |
 
 ---
 
@@ -196,12 +201,12 @@ registry.access.redhat.com/ubi9/ubi:9.8          ← base (R2)
 |---------|------|---------|
 | `qemu-kvm-core` | Rocky AppStream | The emulator (`/usr/libexec/qemu-kvm`) |
 | `qemu-img` | Rocky AppStream | Creates the overlay; converts formats |
-| `qemu-kvm-audio-pa` | Rocky AppStream | *Optional.* Not needed for wav capture, so probably omit it |
-| `edk2-ovmf` | Rocky AppStream (L) / UBI? (U) | UEFI firmware for UEFI guests |
-| `seabios-bin` | Rocky AppStream (L) | BIOS for legacy guests (likely pulled in as a dependency) |
-| `ffmpeg-free` | EPEL (+CRB deps) | Screen recording encode; mux audio and video |
-| `xorriso` or `genisoimage` | UBI? / Rocky (U) | Build the cloud-init NoCloud seed ISO (§8) |
-| `jq`, `socat` | UBI (L) | Small helper scripts in the container |
+| `qemu-kvm-audio-pa` | Rocky AppStream | *Omit.* Not needed for wav capture |
+| `edk2-ovmf` | Rocky AppStream (V) | UEFI firmware for UEFI guests |
+| `seabios-bin` | Rocky AppStream (V) | BIOS for legacy guests |
+| `ffmpeg-free` | EPEL (V); deps from UBI, Rocky AppStream and Rocky CRB (`ladspa`) | Screen recording encode; mux audio and video. Media image only |
+| `xorriso` | Rocky AppStream (V) | Build the cloud-init NoCloud seed ISO (§8) |
+| `jq`, `socat`, `passt` | UBI (V) | Helper scripts; passt is an alternative network backend |
 
 ### 4.3 Image variants (published tags)
 
@@ -240,7 +245,7 @@ The entrypoint takes its configuration from environment variables set by Java. S
   -accel kvm -accel tcg \                # QEMU tries in order; or chosen explicitly by entrypoint
   -cpu host|max -smp ${VM_CPUS} -m ${VM_MEM_MB} \
   -display none -vnc 0.0.0.0:0 \         # VNC also gives a framebuffer for screendump
-  -device virtio-vga \                   # or VGA/bochs-display; must be on RHEL allow-list (spike)
+  -device VGA \                           # virtio-vga is NOT in the RHEL build (spike #1); bochs-display for UEFI
   -qmp tcp:0.0.0.0:4444,server=on,wait=off \
   -chardev socket,id=qga0,host=0.0.0.0,port=4445,server=on,wait=off \
   -device virtio-serial-pci -device virtserialport,chardev=qga0,name=org.qemu.guest_agent.0 \
@@ -259,10 +264,7 @@ Notes:
 
 - **Container ports:** QMP and QGA bind `0.0.0.0` *inside* the container. Testcontainers maps them to random host ports on loopback.
 - **q35 hot-plug:** q35 needs **pre-created `pcie-root-port`s** to hot-plug PCIe devices. The number of ports is configurable and defaults to 4.
-- **User-mode networking (`-netdev user`):**
-  - It needs libslirp to be compiled in. Whether the RHEL 9 build includes it is **U**; the spike checks.
-  - If it is missing, use `passt` with `-netdev stream`. RHEL 9 ships passt.
-  - Networking is not required for QGA-based exec and copy.
+- **User-mode networking:** both `-netdev user` (libslirp) and `-netdev passt` are available (verified in spike #1). Default to `user`. Networking is not required for QGA-based exec and copy.
 
 ### 5.2 KVM vs TCG
 
@@ -321,7 +323,7 @@ Notes:
 
 - QMP: `{"execute":"screendump","arguments":{"filename":"/vm/out/shot-N.png","format":"png"}}` (verified).
 - Java then calls `copyFileFromContainer` to the caller's path, or returns a `BufferedImage`.
-- The VM needs a display device, such as `virtio-vga`, `VGA` or `bochs-display`. Which of these the RHEL build allows is checked in the spike.
+- The VM needs a display device: `VGA` or `bochs-display`. Both were verified present in spike #1; `virtio-vga` is **not** in the RHEL build.
 - **Bonus:** `VmScreen.waitFor(Predicate<BufferedImage>)` provides polling helpers. Image matching or OCR is **out of scope** for v1.
 
 ### 6.4 Audio recording (R7)
@@ -349,7 +351,8 @@ vm-recorder.sh start <fps> <out.webm>
 vm-recorder.sh stop   → finalize, optionally mux wav from §6.4 into the webm (opus)
 ```
 
-- **Codec:** `ffmpeg-free` excludes patent-encumbered encoders such as x264/H.264. Use **VP8/VP9 in WebM**, which ffmpeg-free *likely* includes (**L**, spike), or MJPEG/AVI as a guaranteed fallback.
+- **Codec:** use **VP9 (`libvpx-vp9`) in WebM with Opus audio**. Both were verified present in spike #1, and MJPEG is the fallback.
+  - H.264 is **not usable**: EPEL installs the `noopenh264` stub library.
 - **Frame rate:** default 5 fps; configurable.
   - Each screendump is a full-frame PNG encode inside QEMU, and under TCG that competes with the guest for CPU.
 - **Frame timing:** the loop is wall-clock driven and duplicates frames if a grab runs late.
@@ -481,7 +484,7 @@ class MyVmTest {
       .withVmImage(VmImage.fromUrl(URI.create("https://.../rocky-9-qga.qcow2"), "sha256:..."))
       .withKvm(KvmMode.PREFER)
       .withCpus(2).withMemoryMb(2048)
-      .withDisplay(Display.VIRTIO_VGA)
+      .withDisplay(Display.VGA)
       .withAudio(true)
       .withHotplugSlots(4)
       .withSerialLogConsumer(new Slf4jLogConsumer(log))   // stream serial.log
@@ -652,6 +655,18 @@ Phase 0  Spikes (de-risk)      ──► Phase 1  Core VM        ──► Phase
 6. **ffmpeg-free on UBI + EPEL:** does it install? Which CRB packages come from UBI CRB, and which need Rocky CRB? Is `libvpx-vp9` listed among the encoders?
 7. **Reference guest:** build the Rocky 9 GenericCloud-based guest with QGA (exec allowed) and record its boot time under KVM and TCG.
 
+**Status (2026-10-18):**
+
+| Spike | Result |
+|-------|--------|
+| #1 | **PASS** |
+| #2 | **Answered.** `virtio-vga` and `virtio-sound-pci` are missing; everything else needed is present |
+| #3 | **Answered.** Both slirp and passt are available |
+| #6 | **Answered.** VP9 and Opus are available; H.264 is a stub |
+| #4, #5, #7 | Open |
+
+Details are in `vm-testcontainer/container/spike/RESULTS.md`.
+
 **Exit criteria:**
 
 - All spikes are green or have a decided fallback.
@@ -688,7 +703,7 @@ Phase 0  Spikes (de-risk)      ──► Phase 1  Core VM        ──► Phase
 
 | # | Risk | Impact | Mitigation |
 |---|------|--------|-----------|
-| K1 | **Rocky packages on a UBI base**: dependency conflicts, or replacing UBI packages | Image won't build or is subtly inconsistent | Pin to 9.8, priorities, `excludepkgs`, Phase 0 spike #1. Fallback: base the image on `rockylinux:9.8`. That violates R2, so **it needs your approval** |
+| K1 | **Rocky packages on a UBI base**: dependency conflicts, or replacing UBI packages | **Mitigated:** spike #1 passed (2026-10-18). Remaining risk: future Rocky or UBI point updates drifting apart | Pin to 9.8, priorities, `excludepkgs`, Phase 0 spike #1. Fallback: base the image on `rockylinux:9.8`. That violates R2, so **it needs your approval** |
 | K2 | **Licensing / redistribution** of an image that mixes UBI and Rocky/EPEL content | Can't publish the image publicly | Needs a legal/policy check against the UBI EULA. **Not assessed in this plan**; I can't give an authoritative answer |
 | K3 | Red Hat says direct `qemu-kvm` use and TCG are **unsupported** | No vendor support | Accept for test infrastructure; document |
 | K4 | TCG is very slow | Long or flaky CI | `tcgTimeoutFactor`, small guests, prefer KVM runners |
@@ -703,7 +718,7 @@ Phase 0  Spikes (de-risk)      ──► Phase 1  Core VM        ──► Phase
 | Topic | Decision |
 |-------|----------|
 | Branch | Plan lives on `claude/vm-testcontainer-plan-lqhfa6` (session restriction); rename/merge as desired |
-| K1 fallback (UBI + Rocky mix fails) | **Decide after Phase 0 spike #1** (options: Rocky 9.8 base, or RHEL-entitled build) |
+| K1 fallback (UBI + Rocky mix fails) | Spike #1 **passed**, so no fallback is needed now. Re-evaluate if it breaks later |
 | Image variants | **Slim runner + `-media` variant** (ffmpeg-free only in media) |
 | Module placement | **Multi-module**: root `pom.xml` becomes aggregator; `vm-testcontainer` is a child module |
 | Guest OS scope | **Linux guests only** (v1 and beyond unless revisited) |
@@ -730,6 +745,7 @@ Phase 0  Spikes (de-risk)      ──► Phase 1  Core VM        ──► Phase
 - **Do first:** Phase 0 spikes.
   - The UBI + Rocky repo mix (K1) is the riskiest item.
   - Others: the device allow-list, slirp vs passt, `wavcapture` with the `none` backend, `/dev/kvm` group handling through Podman's compat API, ffmpeg-free codecs, and a reference guest.
-- **Decided:** slim + media images, multi-module build. The K1 fallback is decided after the spike.
+- **Decided:** slim + media images, multi-module build.
+- **Spike #1 passed:** UBI 9.8 + EPEL + Rocky 9.8 installs QEMU and ffmpeg-free cleanly.
 - **Also decided:** Linux guests only; Rocky 9 is the reference test guest.
 - **Still open (§14):** the licensing check (K2).

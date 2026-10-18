@@ -36,8 +36,10 @@ In the implementation, each value is stored in **exactly one** file, given in th
 | `${GRADLE_VERSION}` | `9.1.0` | Gradle wrapper (verify it is current when adopting) | `gradle/wrapper/gradle-wrapper.properties` |
 | `${TESTCONTAINERS_VERSION}` | `2.0.5` | `org.testcontainers:testcontainers` **[V]** | `gradle/libs.versions.toml` |
 | `${JUNIT_VERSION}` | `5.12.2` | JUnit BOM **[V]** | `gradle/libs.versions.toml` |
-| `${JACKSON_VERSION}` | `2.20.0` | jackson-databind (verify it is current when adopting) | `gradle/libs.versions.toml` |
-| `${COMMONS_COMPRESS_VERSION}` | `1.27.1` | commons-compress (tar extraction) **[V]** | `gradle/libs.versions.toml` |
+| `${JACKSON_VERSION}` | `2.22.4` | jackson-databind; latest 2.x release on Maven Central on 2026-10-18 **[V]** | `gradle/libs.versions.toml` |
+| `${COMMONS_COMPRESS_VERSION}` | `1.28.0` | commons-compress: tar extraction, xz/zstd stream decoding **[V]** | `gradle/libs.versions.toml` |
+| `${XZ_VERSION}` | `1.12` | `org.tukaani:xz`, required by commons-compress for `.xz` **[V]** | `gradle/libs.versions.toml` |
+| `${ZSTD_JNI_VERSION}` | `1.5.7-24` | `com.github.luben:zstd-jni`, required by commons-compress for `.zst` (native; bundles linux-x86_64) **[V]** | `gradle/libs.versions.toml` |
 | `${SLF4J_VERSION}` | `2.0.17` | slf4j-api / slf4j-simple (tests) **[V]** | `gradle/libs.versions.toml` |
 | `${ASSERTJ_VERSION}` | `3.27.3` | AssertJ (tests; verify it is current when adopting) | `gradle/libs.versions.toml` |
 | `${UBI_IMAGE}` | `registry.access.redhat.com/ubi9/ubi:9.8` | Runner base image **[V]** | `gradle.properties` → `ubiImage` (passed as `--build-arg UBI_IMAGE`) |
@@ -96,8 +98,8 @@ Version numbers and short prefixes (`vmtc`, `VMTC_`) are excluded from the grep 
 | Source | API |
 |--------|-----|
 | Host path | `VmImage.fromPath` |
-| URL + SHA-256 | `VmImage.fromUrl` |
-| containerDisk image, extracted through the Docker API | `VmImage.fromContainerDisk` **[V]** |
+| `http(s)://` URL: optional SHA-256, optional credentials, `.gz`/`.xz`/`.zst` decompressed automatically | `VmImage.fromUrl` |
+| `oci://` containerDisk image: **pulled by the engine** (engine or explicit credentials), `/disk/` extracted through the Docker API | `VmImage.fromOci` / `fromContainerDisk` **[V]** |
 | Disk baked into a derived runner image | `VmImage.baked()` |
 
 A pre-customized Rocky 9 reference guest is shipped as a containerDisk (§10.3).
@@ -159,6 +161,7 @@ A pre-customized Rocky 9 reference guest is shipped as a containerDisk (§10.3).
 | R10 | Hot-plug simulation | §9.10 |
 | R11 | Repos: UBI first, then EPEL, with Rocky as fallback | §6.2 |
 | R12 | Use `/dev/kvm` when available; work without it | §8.2, §9.6 |
+| R13 | VM images from `http(s)://` and `oci://` URLs, downloaded on demand, with credentials when needed | §9.3.5, §9.3.6, §10.4 |
 | D1 | x86-64 only | — |
 | D2 | **Linux guests only** | §10 |
 | D3 | Reference test guest: **Rocky Linux 9** | §10.3 |
@@ -259,6 +262,16 @@ Legend:
 | containerDisk extraction (`createContainerCmd` + `copyArchiveFromContainerCmd`) is byte-exact on Docker 29.8, Podman 4.9.3 and 5.7.0 when copying a known file path. Copying the `/disk/` **directory** yields entries `disk/` (dir) + `disk/<file>` (file) on Docker 29.8 | [V] |
 | Directory copy of `/disk/` on Podman 4.9.3 and 5.7.0 gives the same `disk/` (dir) + `disk/<file>` (file) entries, byte-exact | [V] (run 5) |
 | `ExecConfig` (`execInContainer(ExecConfig)` with `envVars`) and `RemoteDockerImage(DockerImageName)` exist in testcontainers-2.0.5.jar | [D] (javap) |
+
+### 3.7 Image downloads (R13)
+
+| Fact | Status |
+|------|--------|
+| **HTTP(S)** (JDK `HttpClient`, in-process servers): Basic and Bearer auth work. Missing credentials → 401 → clear exception. A SHA-256 mismatch is rejected and leaves no file. `.gz`, `.xz` and `.zst` decompress to the original bytes, with the checksum verified on the bytes as downloaded. On a redirect to another origin, the target receives **no** `Authorization` header (manual redirect handling). Same-origin redirects keep auth | [V] (local + CI runs #10–#12) |
+| The JDK's own `Redirect.NORMAL` also does not forward a user-set `Authorization` header to another origin | [V] |
+| **Engine pull of a private OCI image** through Testcontainers (`RemoteDockerImage`), against an htpasswd TLS registry, rootless Podman 4.9.3: <ul><li>no credentials → `401 unauthorized`</li><li>credentials in `~/.docker/config.json` → pulled (Testcontainers' `RegistryAuthLocator` sends them)</li><li>**only `podman login`** (`$XDG_RUNTIME_DIR/containers/auth.json`) → pulled (Podman falls back to its own credentials when the client sends none)</li></ul> | [V] (run #12) |
+| **Image mounts** (`MountType.IMAGE`, docker-java 3.7.1): <ul><li>Docker 29.8: works only with API ≥ 1.48 (Testcontainers 2.0.5 defaults to 1.44; `-Dapi.version=1.48` fixes it). Read-only without asking; byte-exact</li><li>Podman 4.9.3 / 5.7.0 via the compat API: `ReadOnly=true` → `500 ro: invalid mount option`. Without `ReadOnly` Podman creates the container, but **Testcontainers fails parsing the inspect response** (`HostConfig.Binds` contains a raw overlay string, and docker-java's `Binds` parser throws)</li><li>`podman run --mount type=image` (CLI) + full VM boot: all 15 applicable checks pass (seed check skipped)</li></ul> **Therefore not used (§15 L6)** | [V] (runs #11–#12) |
+| `land.oras:oras-java-sdk` 0.8.5 pulls ORAS artifacts correctly (TLS + custom CA, credentials, `REGISTRY_AUTH_FILE`, podman `auth.json`, layer selection by title, tag vs digest). **Rejected:** about 10 runtime dependencies (Jackson 3.2.3, native zstd-jni, Bouncy Castle, Micrometer, …), and not needed once disks are published as OCI images | [V] (run #10; evidence only) |
 
 ---
 
@@ -565,7 +578,7 @@ This is the verified `gst-record.sh` + `rec.sh` **[V]**.
 | `${BASE_PACKAGE}` | `QemuVmContainer`, `VmImage`, `KvmMode`, `Accelerator`, `RunnerVariant`, `Firmware`, `ExecRequest`, `GuestExecResult`, `VmtcConstants` (generated), `VmtcCleanup`, `VmtcException` and its subclasses `KvmUnavailableException`, `GuestAgentTimeoutException`, `GuestCommandDisabledException`, `GuestAgentConfinedException`, `GuestExecTimeoutException`, `RecordingException`, `HotplugTimeoutException`, `ImageChecksumException` |
 | `${BASE_PACKAGE}.qmp` | `QmpClient`, `QmpEvent`, `QmpException` (extends `VmtcException`) |
 | `${BASE_PACKAGE}.qga` | `GuestAgentClient` |
-| `${BASE_PACKAGE}.image` | `VmImageCache`, `ContainerDiskExtractor`, `ImageDownloader` |
+| `${BASE_PACKAGE}.image` | `VmImageCache`, `ContainerDiskExtractor`, `ImageDownloader`, `UrlOptions`, `OciOptions`, `HttpCredentials`, `RegistryCredentials`, `Compression` (`AUTO`, `NONE`, `GZIP`, `XZ`, `ZSTD`), `Secret` |
 | `${BASE_PACKAGE}.display` | `VmScreen`, `VncEndpoint`, `ScreenRecording`, `RecordingOptions`, `KeyboardInput` |
 | `${BASE_PACKAGE}.audio` | `AudioRecording` |
 | `${BASE_PACKAGE}.hotplug` | `Devices`, `DeviceSpec` (sealed), `DiskBus` (`USB`, `VIRTIO`), `HotplugHandle`, `CdromDrive` |
@@ -577,7 +590,7 @@ This is the verified `gst-record.sh` + `rec.sh` **[V]**.
 | Scope | Dependencies |
 |-------|--------------|
 | `api` | `org.testcontainers:testcontainers:${TESTCONTAINERS_VERSION}` |
-| `implementation` | `jackson-databind:${JACKSON_VERSION}`, `commons-compress:${COMMONS_COMPRESS_VERSION}` |
+| `implementation` | `jackson-databind:${JACKSON_VERSION}`, `commons-compress:${COMMONS_COMPRESS_VERSION}`, `org.tukaani:xz:${XZ_VERSION}`, `com.github.luben:zstd-jni:${ZSTD_JNI_VERSION}` |
 | `testImplementation` | JUnit BOM, AssertJ, `slf4j-simple:${SLF4J_VERSION}` |
 
 **Runtime overrides.** Each key exists as system property `-D${SYSPROP_PREFIX}.<key>` and as environment variable `${ENV_PREFIX}<KEY_IN_UPPER_SNAKE>`, for example `-Dvmtc.runnerImageMedia` or `VMTC_RUNNER_IMAGE_MEDIA`.
@@ -707,8 +720,11 @@ public class QemuVmContainer extends GenericContainer<QemuVmContainer> {
 ```java
 public sealed interface VmImage {
   static VmImage fromPath(Path file);                          // qcow2 or raw
-  static VmImage fromUrl(URI url, String sha256);              // sha256 required (lower-case hex)
-  static VmImage fromContainerDisk(DockerImageName image);     // KubeVirt containerDisk: exactly one file under /disk/
+  static VmImage fromUrl(URI url);                             // http/https; no checksum → WARN (§9.3.5)
+  static VmImage fromUrl(URI url, UrlOptions options);         // sha256, credentials, compression (§9.3.5)
+  static VmImage fromOci(String ociUrl);                       // "oci://registry/repo:tag" or "oci://registry/repo@sha256:…" (§9.3.6)
+  static VmImage fromOci(String ociUrl, OciOptions options);   // explicit registry credentials
+  static VmImage fromContainerDisk(DockerImageName image);     // same as fromOci, typed reference; exactly one file under /disk/
   static VmImage referenceGuest();                             // fromContainerDisk(override 'guestImage' or VmtcConstants.referenceGuestImage())
   static VmImage baked();                                      // runner image already contains /vm/base/disk.img
 }
@@ -722,11 +738,10 @@ public sealed interface VmImage {
   - `key` = SHA-256 of the file content.
   - The key is memoized in `<cacheDir>/index.json` by `(absolutePath, size, mtimeMillis)`.
   - If `<key>.img` is missing, **copy** the file (`Files.copy`). **Never hard-link**: the `:z` relabel and later edits of the user's file must not touch the cache entry.
-- **`fromUrl`:**
-  - `key` = the given sha256.
-  - Download with `java.net.http.HttpClient` (follow redirects; honours JVM proxy properties) to the tmp file while hashing, verify, then move.
-  - On mismatch: delete the tmp file and throw `ImageChecksumException`.
-- **`fromContainerDisk`:** `key` = `sha256(imageId + "/" + fileName)` (§9.3.3).
+- **`fromUrl`:** see §9.3.5.
+  - Cache key = the SHA-256 if given.
+  - Without a checksum, `key` = `sha256("url:" + normalizedUrl)`, and `<key>.meta.json` stores `ETag` and `Last-Modified`.
+- **`fromOci` / `fromContainerDisk`:** `key` = `sha256(imageId + "/" + fileName)` (§9.3.3, §9.3.6).
 - **Eviction:** none automatic. Public helper: `VmImageCache.prune(Duration olderThan)`, which deletes entries whose last-modified time is older than the given duration. Entries are touched on every use.
 
 #### 9.3.2 Why every source goes through the cache
@@ -737,7 +752,10 @@ public sealed interface VmImage {
 
 #### 9.3.3 containerDisk extraction (`ContainerDiskExtractor`; uses the Testcontainers `DockerClient`, no CLI)
 
-1. `String imageId = new RemoteDockerImage(image).get()`. That resolves the image and applies Testcontainers' pull policy [D].
+1. **Pull through the engine** (always, so tag moves are picked up; the engine skips unchanged layers):
+   - **Without explicit credentials:** `new RemoteDockerImage(image).get()`. The engine authenticates with credentials from Testcontainers' `RegistryAuthLocator` (Docker `config.json` and credential helpers) or, on Podman, its own `auth.json` from `podman login` **[V]**.
+   - **With `OciOptions.credentials(...)`:** `client.pullImageCmd(ref).withAuthConfig(new AuthConfig().withRegistryAddress(host).withUsername(u).withPassword(p)).exec(new PullImageResultCallback()).awaitCompletion()`. These docker-java APIs are [D]; their use here is not yet exercised (T27c).
+   - Then `imageId = client.inspectImageCmd(ref).exec().getId()`.
 2. `id = createContainerCmd(image).withCmd("/none").exec().getId()` creates without starting **[V]**.
 3. `copyArchiveFromContainerCmd(id, "/disk/")` → tar stream.
    - Skip directory entries.
@@ -750,6 +768,47 @@ public sealed interface VmImage {
 
 - The user builds `FROM <runner>` plus `COPY disk.qcow2 /vm/base/disk.img`.
 - No bind. Intended for remote engines and podman-machine setups.
+
+#### 9.3.5 HTTP(S) download (`ImageDownloader`) [V]
+
+**Options:**
+
+```java
+UrlOptions.builder()
+    .sha256(String hex)                       // optional; when absent: WARN once per URL "no integrity check"
+    .credentials(HttpCredentials.basic(user, Secret pw) | .bearer(Secret token) | .header(name, Secret value))
+    .compression(Compression.AUTO)            // AUTO (by URL path suffix .gz/.xz/.zst) | NONE | GZIP | XZ | ZSTD
+    .timeout(Duration)                        // per request; default 30 min (large images)
+    .build();
+```
+
+`Secret` wraps a `char[]` supplier. `toString()` prints `***`. `Secret.fromEnv("NAME")` reads an environment variable lazily.
+
+**Algorithm:**
+
+1. Use one JDK `HttpClient` with `followRedirects(Redirect.NEVER)`. It honours the JVM proxy properties.
+2. Request the URL.
+   - Send the credential header **only** while the request's `scheme://authority` equals the original URL's.
+   - Follow 3xx `Location` manually, resolved relative to the current URL, up to 5 hops; then fail with `IOException("too many redirects")`.
+3. Handle the response:
+   - `401` / `403` → `ImageAuthException("HTTP <code> for <url> (credentials missing or rejected)")`. The URL is printed without user-info or query.
+   - Any other status ≠ 200 → `IOException`.
+4. Stream through a `DigestInputStream` (SHA-256 over the **downloaded** bytes, i.e. what publishers checksum), then through the decompressor, into `<key>.tmp-…`.
+5. If a SHA-256 was given and differs: delete the tmp file and throw `ImageChecksumException(expected, actual)`.
+6. `ATOMIC_MOVE` to `<key>.img`.
+7. **Retries:** up to 3 attempts with backoff of 2 s and 8 s, for I/O errors and 5xx. Never retry 401/403/404 or a checksum mismatch.
+8. **Revalidation** (no checksum given): on a cache hit, send `If-None-Match` / `If-Modified-Since`.
+   - `304` → use the cache.
+   - `200` → replace the entry.
+   - Network failure → use the cache with a WARN.
+
+#### 9.3.6 `oci://` sources (R13) [V]
+
+- **Parsing:** `oci://<registry>/<repo>[:tag|@sha256:<digest>]` → strip `oci://` → `DockerImageName.parse(...)`. A missing tag means `latest`.
+- **Pull:** through the engine, per §9.3.3 step 1. Explicit credentials come from `OciOptions.credentials(RegistryCredentials.basic(user, Secret pw))`; otherwise the engine's own credential stores are used.
+- **Extraction:** `/disk/` is extracted per §9.3.3 steps 2–4 into the cache, keyed by image ID. A tag that moves yields a new image ID and therefore a new cache entry.
+- **No JVM-side registry client:** neither the ORAS SDK nor our own (§15 L7).
+- **Publishing format:** §10.4.
 
 ### 9.4 Exec (R3)
 
@@ -1058,6 +1117,21 @@ Result **[V]** (CI run 5, KVM, no seed attached):
 - the 1 kHz audio test passes;
 - all 16 feature checks pass, including console login after `chpasswd` via QGA.
 
+### 10.4 Publishing VM disks as OCI images (R13)
+
+We control the publishers, so every OCI-hosted disk uses the KubeVirt containerDisk layout:
+
+```dockerfile
+FROM scratch
+ADD --chown=107:107 <name>.qcow2 /disk/<name>.qcow2      # exactly ONE regular file under /disk/
+```
+
+- **qcow2:** produce it with `qemu-img convert -O qcow2 -c` (internally compressed). Do not `.xz` it: registry layers are already compressed.
+- **Push:** `podman push` or `docker push` to any OCI registry.
+- **References:** consume by tag, or by digest for reproducible tests (`oci://registry/repo@sha256:…`).
+- **Labels (optional, informational):** `${LABEL_PREFIX}.guest.os`, `${LABEL_PREFIX}.guest.contract=G1-G6`.
+- **The reference guest (§10.3) is published exactly this way.**
+
 ---
 
 ## 11. Build (Gradle)
@@ -1172,6 +1246,9 @@ The CI step from §0 (fixed-string, whole-word grep).
 | T23 | `referenceGuestNoSeed` | §10.3 acceptance | [V] (run 5: 11.2 s) |
 | T24 | `noZombieRecorders` | after start+stop of a recording, no process in the container is in state `Z` | [V] (tini, sandbox) |
 | T25 | `stockRockyWithSeed` | `fromUrl(${GUEST_BASE_URL}, ${GUEST_BASE_SHA256})` + `CloudInitSeed.forStockRocky()` → T3 passes | [V] |
+| T26 | `httpDownload` | Local `HttpServer`: <ul><li>(a) no credentials → `ImageAuthException`</li><li>(b) Basic and Bearer succeed</li><li>(c) wrong SHA-256 → `ImageChecksumException` and no cache file</li><li>(d) `.gz`/`.xz`/`.zst` decompress to the original</li><li>(e) a cross-origin redirect target receives no `Authorization`</li><li>(f) no checksum → WARN and ETag revalidation (`304` reuses the cache)</li></ul> | [V] (a–e); (f) [U] |
+| T27 | `ociPrivateImage` | htpasswd TLS registry: <ul><li>(a) no credentials → 401 mapped to `ImageAuthException`</li><li>(b) Docker `config.json` → boots</li><li>(c) explicit `OciOptions.credentials` → boots</li><li>(d) `podman login` only → boots</li></ul> | [V] pull for a, b, d; (c) [U] |
+| T28 | `ociTagMove` | Push v1 under `:t` and boot; push v2 under `:t` → a new image ID gives a new cache entry and the guest sees v2. `@sha256:` of v1 still boots v1 | [U] |
 
 **Unit tests (no engine):**
 - QMP/QGA codecs against an in-JVM fake server: `0xFF` resync, chunking, base64, timeouts, event skipping.
@@ -1187,9 +1264,9 @@ The CI step from §0 (fixed-string, whole-word grep).
 
 | M | Content | Exit criteria |
 |---|---------|---------------|
-| M1 | Gradle skeleton (§5, §11); runner images (§6, §7); `QemuVmContainer` start/stop; QMP; QGA; exec; copy; `fromPath`, `fromUrl`; `CloudInitSeed.forStockRocky()`; KvmMode/§9.6 | T1–T4, T20, T24, T25 green on KVM and TCG; §6.4 passes |
+| M1 | Gradle skeleton (§5, §11); runner images (§6, §7); `QemuVmContainer` start/stop; QMP; QGA; exec; copy; `fromPath`, basic `fromUrl` (no credentials or decompression yet); `CloudInitSeed.forStockRocky()`; KvmMode/§9.6 | T1–T4, T20, T24, T25 green on KVM and TCG; §6.4 passes |
 | M2 | Screens, VNC endpoints and password, screenshots, keyboard, `forceModeset`, UEFI | T5–T7, T12, T22 |
-| M3 | `fromContainerDisk`, `baked`, `referenceGuest`, cache, `buildGuestDisk`; switch M1/M2 tests to `referenceGuest()` | T18, T19, T23 |
+| M3 | `fromContainerDisk`, `fromOci` (engine pull + credentials), `fromUrl` (§9.3.5 incl. credentials and decompression), `baked`, `referenceGuest`, cache, `buildGuestDisk`; switch M1/M2 tests to `referenceGuest()` | T18, T19, T23, T26–T28 |
 | M4 | Screen recording (media), audio | T8–T11 |
 | M5 | Hot-plug | T13–T17 |
 | M6 | JUnit extension, orphan cleanup, CI hardening, §12.3 hygiene check, docs | T21; all jobs green |
@@ -1211,6 +1288,9 @@ The CI step from §0 (fixed-string, whole-word grep).
 | R4 | `/dev/kvm` 0660 hosts on Podman < 5.7 | needs user config | §9.6 detection and message [V] |
 | R5 | UEFI firmware paths | — | T22 |
 | R6 | ubuntu-26.04 runner image is in public preview | CI label may change | 24.04 stays primary |
+| L6 | **Image mounts not used** (they would avoid the extraction copy): Docker needs API ≥ 1.48 while Testcontainers defaults to 1.44; Podman's inspect output breaks docker-java's `Binds` parser | one extra disk copy per image digest | Extraction + bind (§9.3.6). Revisit when Podman/docker-java fix the inspect issue |
+| L7 | ORAS artifacts (`oras push`) are **not supported**: disks are published as OCI images instead (§10.4). The ORAS Java SDK was prototyped and rejected (dependency weight) | — | Publish with §10.4 |
+| R7 | Large HTTP downloads over slow links | long first-run time | cache; retries; per-request timeout option |
 
 ---
 
@@ -1233,7 +1313,8 @@ All on branch `claude/vm-testcontainer-plan-lqhfa6` of this repository (PR #9).
 | Spike write-ups (packaging, audio, SELinux, GStreamer, multi-screen, CI matrices) | `vm-testcontainer/container/spike/RESULTS.md` |
 | Reference scripts | `vm-testcontainer/container/spike/`: `start-vm.sh`, `make-seed.sh`, `build-guest.sh`, `gst-record.sh`, `rec.sh`, `vmctl.py`, `typekeys.py`, `fb-activate.py`, `install-packages.sh`, `repos/` |
 | Feature checks | `vm-testcontainer/container/spike/ci_spikes.py` |
-| Compat probe | `vm-testcontainer/spike-java/` (`PodmanKvmProbeTest`, `run-scenario.sh`) |
+| Compat probe | `vm-testcontainer/spike-java/` (`PodmanKvmProbeTest`, `run-scenario.sh`; `PullAuthProbeTest`, `run-pull-auth.sh` for R13) |
+| Download probes (R13) | `vm-testcontainer/spike-oras/` (`HttpDownloadTest` = candidate §9.3.5 algorithm; `OrasPullTest` = rejected ORAS SDK option; `run-oras-ci.sh`) |
 | Workflow | `.github/workflows/vm-testcontainer-spikes.yml` |
 
 | CI run | Showed |
@@ -1242,6 +1323,9 @@ All on branch `claude/vm-testcontainer-plan-lqhfa6` of this repository (PR #9).
 | 2 (`39141980865`) | + 26.04 KVM all pass; TCG XFAIL vCPU; seed `DNF_RC` logging |
 | 4 (`39142697864`) | login-session 0660 matrix on Podman 4.9.3 and 5.7.0; containerDisk (file path) on both |
 | 5 (`39143866181`) | reference-guest pipeline + seedless boot, all checks pass (§10.3, T23); `/disk/` directory copy on Podman 4.9.3/5.7.0; chpasswd via QGA before console login |
+| 10 (`39146302796`) | ORAS SDK prototype (rejected option) and HTTP downloader: all checks pass |
+| 11 (`39146734647`) | Image mount: works through the Podman CLI (full VM boot); compat API rejects `ReadOnly` |
+| 12 (`39147798578`) | Engine pull of a private image: 401 / Docker config / `podman login` fallback; image mount through Testcontainers on Podman blocked by the inspect `Binds` parse |
 
 **Sandbox-only evidence** (Docker 29.8, TCG):
 - `tini` reaping (T24);
@@ -1263,7 +1347,7 @@ All on branch `claude/vm-testcontainer-plan-lqhfa6` of this repository (PR #9).
   - WAV audio;
   - keyboard;
   - hot-plug of USB, PCIe disk/NIC, CD, memory, and vCPU (KVM only).
-- **Images:** all sources end up as a cached, read-only base disk plus a per-start overlay. A pre-customized Rocky 9 guest is shipped as a containerDisk; the pipeline is verified, and that guest is ready about 11 s after start under KVM.
+- **Images:** every source ends up as a cached, read-only base disk plus a per-start overlay. Sources: host paths, `http(s)://` (optional SHA-256, credentials, gz/xz/zst), and `oci://` containerDisk images. OCI images are pulled by the engine with engine or explicit credentials, then extracted. No ORAS SDK. A pre-customized Rocky 9 guest is shipped as a containerDisk; the pipeline is verified, and that guest is ready about 11 s after start under KVM.
 - **Rules that matter** (§1 a–i): `tini`; `incremental=false`; validate recordings by file; `force-shared`; per-display `set_password`; guest RPC filter **and** SELinux permissive domain; the keep-groups **annotation**, never `GroupAdd`; internal QMP socket.
 - **Open:**
   - publishing/licensing of the mixed image (R2);

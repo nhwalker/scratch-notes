@@ -271,3 +271,46 @@ Compat probe, containerDisk extraction by copying the **`/disk/` directory**: en
 
 - **`tini` as PID 1:** an orphaned child is reaped, and no zombies remain.
 - **QEMU with `-qmp tcp:…:4444` plus `-qmp unix:/tmp/qmp-int.sock`:** both work at the same time. While one client holds the TCP monitor, a second TCP client gets no greeting.
+
+## Runs 10–12: image downloads (R13)
+
+Job `oras-http-probe` (ubuntu-24.04, rootless Podman 4.9.3) plus the image-mount steps in `guest-build` and `compat-api-probe`.
+Registries: `registry:2` with htpasswd, TLS on `registry.test:5443` (self-signed CA), plain HTTP on `localhost:5000`.
+
+### HTTP(S) downloader (`spike-oras/HttpDownloadTest`, in-process servers) — run 10, all pass
+
+| Case | Result |
+|------|--------|
+| No credentials | 401 → clear exception |
+| Basic / Bearer | download ok |
+| Wrong SHA-256 | rejected, no file left behind |
+| `.gz` / `.xz` / `.zst` | decompressed bytes equal the original; checksum checked on the bytes as downloaded |
+| Redirect to another origin (manual redirects, `Redirect.NEVER`) | target receives **no** `Authorization` |
+| Same-origin redirect | auth kept |
+| JDK `Redirect.NORMAL` cross-origin | also drops a user-set `Authorization` |
+
+### ORAS Java SDK 0.8.5 (`spike-oras/OrasPullTest`) — run 10, all pass, **option rejected**
+
+- Works: TLS + custom CA, explicit credentials, `REGISTRY_AUTH_FILE`, `podman login` `auth.json`, layer selection by title, tag move vs `@digest` pinning, plain-HTTP registry.
+- Anonymous / wrong password → exception.
+- Rejected for its dependency footprint (Jackson 3.2.3, native zstd-jni, Bouncy Castle, Micrometer, …) and because disks are published as OCI images instead.
+- oras CLI 1.3.4 forces plain HTTP for `localhost`, so the TLS registry needs a non-localhost name (`registry.test`).
+
+### Image mounts (`--mount type=image`) — runs 11–12, **not used**
+
+| Path | Result |
+|------|--------|
+| `podman run --mount type=image` (CLI) + full VM boot, `ci_spikes.py --disk-image` | all applicable checks pass (seed check skipped) |
+| Docker 29.8 via Testcontainers 2.0.5 | needs API ≥ 1.48 (default 1.44); `-Dapi.version=1.48` works; read-only; byte-exact |
+| Podman 4.9.3 / 5.7.0 via compat API, `ReadOnly=true` | `500 ro: invalid mount option` |
+| Podman via compat API, `ReadOnly` unset | container is created, but Testcontainers fails parsing inspect `HostConfig.Binds` (raw overlay string) |
+
+### Engine pull of a private containerDisk (`spike-java/PullAuthProbeTest`, `run-pull-auth.sh`) — run 12
+
+| Scenario | Result |
+|----------|--------|
+| S1: no credentials | `401 unauthorized` |
+| S2: credentials in `~/.docker/config.json` | pulled (Testcontainers `RegistryAuthLocator`) |
+| S3: only `podman login` (`$XDG_RUNTIME_DIR/containers/auth.json`) | pulled (Podman uses its own credentials when the client sends none) |
+
+Not exercised: explicit `AuthConfig` on `pullImageCmd` (plan T27c), ETag revalidation (T26f), tag move through the engine (T28).

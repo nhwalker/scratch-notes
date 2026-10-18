@@ -20,7 +20,9 @@ import analyze_wav  # noqa: E402  (module form of analyze_wav.py, see analyze() 
 ap = argparse.ArgumentParser()
 ap.add_argument("--engine", default="podman")
 ap.add_argument("--image", default="vmtc-spike:media")
-ap.add_argument("--disk", required=True)
+ap.add_argument("--disk", help="host qcow2 bind-mounted read-only")
+ap.add_argument("--disk-image", help="containerDisk image ref, mounted with --mount type=image at /vm/image")
+ap.add_argument("--disk-file", default="disk.qcow2", help="file name under /disk/ in --disk-image")
 ap.add_argument("--accel", choices=["kvm", "tcg"], required=True)
 ap.add_argument("--out", required=True)
 ap.add_argument("--name", default="spikevm")
@@ -113,7 +115,11 @@ if args.network_host:
     run += ["--network", "host"]
 else:
     run += ["-e", "VNC_BIND=0.0.0.0"] + sum((["-p", f"127.0.0.1::{5900 + i}"] for i in range(args.screens)), [])
-run += ["-v", f"{os.path.abspath(args.disk)}:/vm/base/disk.img:ro", "-v", f"{HERE}:/spike:ro", args.image,
+if args.disk_image:
+    run += ["--mount", f"type=image,source={args.disk_image},destination=/vm/image", "-e", f"VM_BASE=/vm/image/disk/{args.disk_file}"]
+else:
+    run += ["-v", f"{os.path.abspath(args.disk)}:/vm/base/disk.img:ro"]
+run += ["-v", f"{HERE}:/spike:ro", args.image,
         "bash", "-c", "exec /spike/start-vm.sh" if args.no_seed else
         "xorriso -as mkisofs -quiet -V cidata -J -r -o /vm/seed.iso /spike/seed/user-data /spike/seed/meta-data && exec /spike/start-vm.sh"]
 if args.no_seed:

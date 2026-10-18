@@ -35,6 +35,9 @@ rm -f target/probe-results.txt
 podman build -q -t localhost/vmtc-containerdisk-probe:latest containerdisk >/dev/null
 DOCKER_HOST="unix://$SOCK" TESTCONTAINERS_RYUK_DISABLED=true PROBE_EXPECT_KVM_MODE="$MODE" \
   PROBE_KVM_GID="$(getent group kvm | cut -d: -f3)" mvn -B -q test -Dprobe.image="$IMAGE" || echo "MVN_FAILED" >> target/probe-results.txt
+echo "image-mount with -Dapi.version=1.48:" >> target/probe-results.txt
+DOCKER_HOST="unix://$SOCK" TESTCONTAINERS_RYUK_DISABLED=true mvn -B -q test -Dtest=PodmanKvmProbeTest#imageMount -Dapi.version=1.48 \
+  -Dprobe.image="$IMAGE" || echo "MVN_FAILED(api1.48)" >> target/probe-results.txt
 { echo "podman: $(podman --version)  scenario=$NAME mode=$MODE conf=${CONF:-none}"; cat target/probe-results.txt; } > "../../probe-$NAME.txt"
 cat "../../probe-$NAME.txt"
 kill "$SVC" 2>/dev/null; pkill -f "podman system service --time=0 unix://$SOCK" 2>/dev/null; true

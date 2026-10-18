@@ -149,6 +149,49 @@ class PodmanKvmProbeTest {
     assertTrue(java.util.Arrays.equals(got, Files.readAllBytes(expected)));
   }
 
+  /**
+   * Image mount through the Docker-compatible API (docker-java MountType.IMAGE): the containerDisk image is mounted
+   * read-only into the runner container; whole image and ImageOptions.subpath variants. No JVM-side download.
+   */
+  @Test
+  void imageMount() throws Exception {
+    String disk = System.getProperty("probe.containerdisk", "localhost/vmtc-containerdisk-probe:latest");
+    Path expected = Path.of(System.getProperty("probe.containerdisk.file", "containerdisk/disk.qcow2"));
+    org.junit.jupiter.api.Assumptions.assumeTrue(Files.exists(expected), "no containerdisk probe file");
+    String want = java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(expected)));
+    for (String variant : new String[] {"whole", "subpath"}) {
+      com.github.dockerjava.api.model.Mount m = new com.github.dockerjava.api.model.Mount()
+          .withType(com.github.dockerjava.api.model.MountType.IMAGE).withSource(disk).withReadOnly(true);
+      String file;
+      if (variant.equals("whole")) {
+        m.withTarget("/vm/image");
+        file = "/vm/image/disk/disk.qcow2";
+      } else {
+        m.withTarget("/vm/base").withImageOptions(new com.github.dockerjava.api.model.ImageOptions().withSubpath("disk"));
+        file = "/vm/base/disk.qcow2";
+      }
+      String out;
+      try (GenericContainer<?> c = new GenericContainer<>(IMAGE)
+          .withCreateContainerCmdModifier(cmd -> cmd.getHostConfig().withMounts(java.util.List.of(m)))
+          .withCommand("sh", "-c", "sha256sum " + file + " | cut -c1-64; qemu-img info --output=json " + file
+              + " | jq -r .format; (echo x > " + file + ".w) 2>&1 | grep -o 'Read-only file system'; grep ' /vm/' /proc/mounts | cut -d' ' -f1-4")
+          .withStartupCheckStrategy(new OneShotStartupCheckStrategy().withTimeout(Duration.ofSeconds(60)))) {
+        try {
+          c.start();
+          out = c.getLogs().strip().replace("\n", " | ");
+        } catch (Exception e) {
+          StringBuilder chain = new StringBuilder("START FAILED:");
+          for (Throwable x = e; x != null; x = x.getCause()) chain.append(" <- ").append(x.getClass().getSimpleName()).append(": ").append(x.getMessage());
+          out = chain.toString().replace("\n", " ");
+        }
+      }
+      String rec = "image-mount-" + variant + " | " + out + " | sha256 match=" + out.startsWith(want) + System.lineSeparator();
+      Files.createDirectories(RESULTS.getParent());
+      Files.writeString(RESULTS, rec, java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND);
+      System.out.print("### " + rec);
+    }
+  }
+
   /** Read-only bind mount of a file (the VM base-disk pattern). */
   @Test
   void readOnlyFileBind() throws IOException {

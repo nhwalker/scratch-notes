@@ -2,8 +2,9 @@
 # Spike VM launcher (runs in the container). Base disk at /vm/base/disk.img (ro), seed ISO optional at /vm/seed.iso.
 set -euo pipefail
 mkdir -p /vm/run /vm/out
-FMT=$(qemu-img info --output=json /vm/base/disk.img | python3 -c 'import json,sys;print(json.load(sys.stdin)["format"])')
-qemu-img create -q -f qcow2 -F "$FMT" -b /vm/base/disk.img /vm/run/overlay.qcow2 20G
+BASE=${VM_BASE:-/vm/base/disk.img}
+FMT=$(qemu-img info --output=json "$BASE" | python3 -c 'import json,sys;print(json.load(sys.stdin)["format"])')
+qemu-img create -q -f qcow2 -F "$FMT" -b "$BASE" /vm/run/overlay.qcow2 20G
 case "${VM_ACCEL:-auto}" in
   kvm) ACCEL="-accel kvm -cpu host";;
   tcg) ACCEL="-accel tcg -cpu max";;

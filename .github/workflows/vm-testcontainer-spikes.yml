@@ -134,6 +134,12 @@ jobs:
           python3 "$SPIKE_DIR/ci_spikes.py" --engine podman --image "$IMAGE" --no-seed \
             --disk "$HOME/guest-work/run/rocky9-vmtc.qcow2" --accel kvm --out out-guest-noseed
 
+      - name: Boot the reference guest via IMAGE MOUNT (no extraction, no bind) and run all checks
+        run: |
+          python3 "$SPIKE_DIR/ci_spikes.py" --engine podman --image "$IMAGE" --no-seed \
+            --disk-image localhost/vmtc-guest:spike --disk-file rocky9-vmtc.qcow2 --accel kvm --out out-guest-imagemount
+          cat out-guest-imagemount/results.md >> "$GITHUB_STEP_SUMMARY"
+
       - name: Publish results
         if: always()
         run: |
@@ -147,7 +153,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: guest-build
-          path: out-guest-noseed/
+          path: |
+            out-guest-noseed/
+            out-guest-imagemount/
           retention-days: 14
 
   oras-http-probe:

@@ -150,6 +150,39 @@ jobs:
           path: out-guest-noseed/
           retention-days: 14
 
+  oras-http-probe:
+    name: oras-http-probe (R13 image downloads with credentials)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+
+      - name: Registries + oras CLI pushes + Java SDK / HTTP tests
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: set -o pipefail; vm-testcontainer/spike-oras/run-oras-ci.sh 2>&1 | tee oras-http.log
+
+      - name: Publish results
+        if: always()
+        run: |
+          { echo '### oras-http-probe'; echo '```'; grep -E "^\[|^http|^jackson|^jdk|oras manifest|^\{|^Version|registry image" vm-testcontainer/spike-oras/target/*-results.txt oras-http.log | cut -c1-400; echo '```'; } >> "$GITHUB_STEP_SUMMARY" || true
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: oras-http-probe
+          path: |
+            oras-http.log
+            vm-testcontainer/spike-oras/target/*-results.txt
+          retention-days: 14
+
   compat-api-probe:
     name: compat-api-probe (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

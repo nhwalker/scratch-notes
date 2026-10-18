@@ -21,13 +21,16 @@ env:
 
 jobs:
   vm-spikes:
-    name: vm-spikes (${{ matrix.accel }})
-    runs-on: ubuntu-24.04
+    name: vm-spikes (${{ matrix.os }}, ${{ matrix.accel }})
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
-        accel: [kvm, tcg]
+        include:
+          - { os: ubuntu-24.04, accel: kvm }
+          - { os: ubuntu-24.04, accel: tcg }
+          - { os: ubuntu-26.04, accel: kvm }
     steps:
       - uses: actions/checkout@v4
 
@@ -77,25 +80,29 @@ jobs:
       - name: Run VM spikes
         run: |
           python3 "$SPIKE_DIR/ci_spikes.py" --engine podman --image "$IMAGE" \
-            --disk "$HOME/vm-images/$ROCKY_IMAGE" --accel "${{ matrix.accel }}" --out "out-${{ matrix.accel }}" \
+            --disk "$HOME/vm-images/$ROCKY_IMAGE" --accel "${{ matrix.accel }}" --out "out-${{ matrix.os }}-${{ matrix.accel }}" \
             --boot-timeout 2400
 
       - name: Publish results
         if: always()
-        run: cat "out-${{ matrix.accel }}/results.md" >> "$GITHUB_STEP_SUMMARY" || true
+        run: cat "out-${{ matrix.os }}-${{ matrix.accel }}/results.md" >> "$GITHUB_STEP_SUMMARY" || true
 
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: vm-spikes-${{ matrix.accel }}
-          path: out-${{ matrix.accel }}/
+          name: vm-spikes-${{ matrix.os }}-${{ matrix.accel }}
+          path: out-${{ matrix.os }}-${{ matrix.accel }}/
           retention-days: 14
 
   compat-api-probe:
-    name: compat-api-probe (Testcontainers -> rootless Podman)
-    runs-on: ubuntu-24.04
+    name: compat-api-probe (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-26.04]
     steps:
       - uses: actions/checkout@v4
 
@@ -105,50 +112,35 @@ jobs:
           java-version: "21"
           cache: maven
 
+      - name: Podman facts
+        run: |
+          podman --version
+          podman info --format '{{.Host.OCIRuntime.Name}} {{.Host.OCIRuntime.Version}} rootless={{.Host.Security.Rootless}}'
+
       - name: Build spike image
         run: podman build -f "$SPIKE_DIR/Containerfile.spike" --build-arg VARIANT=slim -t "$IMAGE" "$SPIKE_DIR"
 
-      - name: "Scenario A: /dev/kvm 0666, plain podman service"
-        run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm && ls -l /dev/kvm
-          SOCK="$XDG_RUNTIME_DIR/podman/podman-a.sock"; mkdir -p "$(dirname "$SOCK")"
-          podman system service --time=0 "unix://$SOCK" & echo $! > /tmp/svc.pid; sleep 3
-          cd vm-testcontainer/spike-java
-          DOCKER_HOST="unix://$SOCK" TESTCONTAINERS_RYUK_DISABLED=true PROBE_EXPECT_KVM_MODE=0666 \
-            mvn -B -q test -Dprobe.image="$IMAGE" || echo "MVN_FAILED" >> target/probe-results.txt
-          mv target/probe-results.txt ../../probe-A.txt
-          kill "$(cat /tmp/svc.pid)"
+      - name: "Scenario A: /dev/kvm 0666"
+        run: vm-testcontainer/spike-java/run-scenario.sh A 0666
 
-      - name: "Scenario B: /dev/kvm 0660 root:kvm, podman service started with kvm group"
-        run: |
-          sudo rm -f /etc/udev/rules.d/99-kvm4all.rules
-          sudo chown root:kvm /dev/kvm && sudo chmod 0660 /dev/kvm && ls -l /dev/kvm
-          sudo usermod -aG kvm "$USER"
-          KVM_GID=$(getent group kvm | cut -d: -f3)
-          SOCK="$XDG_RUNTIME_DIR/podman/podman-b.sock"
-          sg kvm -c "podman system service --time=0 unix://$SOCK" & echo $! > /tmp/svc.pid; sleep 3
-          echo "CLI reference (no group-add):"; sg kvm -c "podman run --rm --device /dev/kvm $IMAGE python3 -c \"import os; os.open('/dev/kvm', os.O_RDWR); print('CLI_OPEN_OK')\"" || true
-          echo "CLI reference (--group-add keep-groups):"; sg kvm -c "podman run --rm --device /dev/kvm --group-add keep-groups $IMAGE python3 -c \"import os; os.open('/dev/kvm', os.O_RDWR); print('CLI_KEEPGROUPS_OPEN_OK')\"" || true
-          cd vm-testcontainer/spike-java
-          DOCKER_HOST="unix://$SOCK" TESTCONTAINERS_RYUK_DISABLED=true PROBE_KVM_GID="$KVM_GID" \
-            mvn -B -q test -Dprobe.image="$IMAGE" || echo "MVN_FAILED" >> target/probe-results.txt
-          mv target/probe-results.txt ../../probe-B.txt
-          kill "$(cat /tmp/svc.pid)" || true
+      - name: "Scenario B: /dev/kvm 0660 root:kvm, service started with kvm group"
+        run: vm-testcontainer/spike-java/run-scenario.sh B 0660
+
+      - name: "Scenario C: as B + containers.conf annotation run.oci.keep_original_groups=1"
+        run: vm-testcontainer/spike-java/run-scenario.sh C 0660 containers-keepgroups.conf
 
       - name: Publish results
         if: always()
         run: |
-          for f in probe-A.txt probe-B.txt; do
-            echo "### $f" >> "$GITHUB_STEP_SUMMARY"; echo '```' >> "$GITHUB_STEP_SUMMARY"
-            cat "$f" >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || echo missing >> "$GITHUB_STEP_SUMMARY"
-            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          for f in probe-*.txt; do
+            echo "### ${{ matrix.os }} $f" >> "$GITHUB_STEP_SUMMARY"; echo '```' >> "$GITHUB_STEP_SUMMARY"
+            cat "$f" >> "$GITHUB_STEP_SUMMARY"; echo '```' >> "$GITHUB_STEP_SUMMARY"
           done
 
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: compat-api-probe
+          name: compat-api-probe-${{ matrix.os }}
           path: probe-*.txt
           retention-days: 14

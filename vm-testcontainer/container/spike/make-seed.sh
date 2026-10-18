@@ -23,7 +23,7 @@ EOF2
 [ -n "${GUEST_PROXY:-}" ] && printf '  - echo "proxy=%s" >> /etc/dnf/dnf.conf\n' "$GUEST_PROXY"
 cat <<'EOF2'
 EOF2
-[ -n "${SEED_PACKAGES-alsa-utils}" ] && printf '  - dnf -y install %s > /dev/ttyS0 2>&1 || echo DNF_FAILED > /dev/ttyS0\n' "${SEED_PACKAGES-alsa-utils}"
+[ -n "${SEED_PACKAGES-alsa-utils}" ] && printf '  - sh -c "dnf -y install %s > /var/log/seed-dnf.log 2>&1; echo DNF_RC=\\$? > /dev/ttyS0; tail -5 /var/log/seed-dnf.log > /dev/ttyS0"\n' "${SEED_PACKAGES-alsa-utils}"
 cat <<'EOF2'
   - sed -i 's/^FILTER_RPC_ARGS=.*/FILTER_RPC_ARGS=""/' /etc/sysconfig/qemu-ga
   - semanage permissive -a virt_qemu_ga_t

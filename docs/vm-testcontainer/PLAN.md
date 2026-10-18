@@ -1,7 +1,7 @@
 # QEMU VM Testcontainer: Implementation Plan
 
 > **Audience:** the agent (or engineer) who will implement this module in a **different repository**. Everything needed is in this document. Appendix A inlines every file you must copy verbatim.
-> **Status:** final plan. Behaviour marked **[V]** was verified by an experiment; the evidence is in §17.
+> **Status:** final plan, reviewed. Behaviour marked **[V]** was verified by an experiment or against a primary source (jar, package list, documentation page); the evidence is in §17. **[D]** = from documentation or a jar's signatures. **[U]** = unverified; an acceptance test covers it.
 > **Scope:** x86-64 hosts and Linux guests only.
 > **Document set:** this file says **what** we build and why. [REQUIREMENTS.md](REQUIREMENTS.md) holds the testable requirements (`REQ-*` IDs) that tests point at. [PLAN-STEPS.md](PLAN-STEPS.md) is the step-by-step checklist the implementer follows. All three use the §0 parameters.
 
@@ -34,15 +34,19 @@ In the implementation, each value is stored in **exactly one** file, given in th
 | `${ENV_PREFIX}` | `VMTC_` | Prefix for host environment variables (`VMTC_KVM`, …) | `gradle.properties` → `envPrefix` |
 | `${CACHE_DIR_NAME}` | `vm-testcontainer` | Directory under `$XDG_CACHE_HOME` (default `~/.cache`) | `gradle.properties` → `cacheDirName` |
 | `${JAVA_RELEASE}` | `21` | Java language level | `gradle.properties` → `javaRelease` |
-| `${GRADLE_VERSION}` | `9.1.0` | Gradle wrapper (verify it is current when adopting) | `gradle/wrapper/gradle-wrapper.properties` |
+| `${GRADLE_VERSION}` | `9.8.1` | Gradle wrapper; current release on 2026-10-18 **[V]** | `gradle/wrapper/gradle-wrapper.properties` |
 | `${TESTCONTAINERS_VERSION}` | `2.0.5` | `org.testcontainers:testcontainers` **[V]** | `gradle/libs.versions.toml` |
-| `${JUNIT_VERSION}` | `5.12.2` | JUnit BOM **[V]** | `gradle/libs.versions.toml` |
+| `${JUNIT_VERSION}` | `5.14.4` | JUnit BOM; latest 5.x on 2026-10-18 **[V]**. Stay on 5.x: `allure-jupiter` 3.x pulls JUnit 6 (D10) | `gradle/libs.versions.toml` |
+| `${ALLURE_JAVA_VERSION}` | `2.35.5` | `io.qameta.allure:allure-bom`, `allure-jupiter`, `allure-java-commons` (2.x line; its JUnit runtime deps are 5.10.3 and are overridden by the BOM above) **[V]** | `gradle/libs.versions.toml` |
+| `${ALLURE_REPORT_VERSION}` | `2.46.1` | `io.qameta.allure:allure-commandline` zip (the report generator; `bin/allure` inside `allure-2.46.1/`) **[V]** | `gradle/libs.versions.toml` |
+| `${REQ_DOC_URL}` | `https://github.com/nhwalker/vm-testcontainer/blob/main/docs/vm-testcontainer/REQUIREMENTS.md` | Link target for requirement links in the Allure report | `gradle.properties` → `reqDocUrl` |
 | `${JACKSON_VERSION}` | `2.22.4` | jackson-databind; latest 2.x release on Maven Central on 2026-10-18 **[V]** | `gradle/libs.versions.toml` |
 | `${COMMONS_COMPRESS_VERSION}` | `1.28.0` | commons-compress: tar extraction, xz/zstd stream decoding **[V]** | `gradle/libs.versions.toml` |
 | `${XZ_VERSION}` | `1.12` | `org.tukaani:xz`, required by commons-compress for `.xz` **[V]** | `gradle/libs.versions.toml` |
 | `${ZSTD_JNI_VERSION}` | `1.5.7-24` | `com.github.luben:zstd-jni`, required by commons-compress for `.zst` (native; bundles linux-x86_64) **[V]** | `gradle/libs.versions.toml` |
 | `${SLF4J_VERSION}` | `2.0.17` | slf4j-api / slf4j-simple (tests) **[V]** | `gradle/libs.versions.toml` |
 | `${ASSERTJ_VERSION}` | `3.27.3` | AssertJ (tests; verify it is current when adopting) | `gradle/libs.versions.toml` |
+| `${JACOCO_VERSION}` | — | *(not used; placeholder removed)* | — |
 | `${UBI_IMAGE}` | `registry.access.redhat.com/ubi9/ubi:9.8` | Runner base image **[V]** | `gradle.properties` → `ubiImage` (passed as `--build-arg UBI_IMAGE`) |
 | `${ROCKY_RELEASE}` | `9.8` | Rocky fallback repo release **[V]** | `images/runner/repos/rocky.repo` (literal in `baseurl`; this file is its only home) |
 | `${GUEST_BASE_URL}` | `https://dl.rockylinux.org/pub/rocky/9/images/x86_64/Rocky-9-GenericCloud-Base-9.8-20260525.0.x86_64.qcow2` | Reference guest source image **[V]** | `images/guest/guest.properties` → `baseUrl` |
@@ -50,7 +54,9 @@ In the implementation, each value is stored in **exactly one** file, given in th
 
 **Fixed protocol strings.** These are **not** parameters; they are identical in every adoption:
 
-- Log markers: `VMTC_READY`, `VMTC_ERROR`, `VMTC_ACCEL`, `VMTC_QEMU_STARTING`, `VMTC_REC_*`, `VMTC_SEED_DONE`.
+- Container-log markers printed by `vmtc-entrypoint`: `VMTC_ACCEL kvm|tcg`, `VMTC_QEMU_STARTING <epoch>` (informational), `VMTC_READY`, `VMTC_ERROR <text>`.
+- Recorder markers printed by `vmtc-rec`: `VMTC_REC_STARTED <pid>`, `VMTC_REC_OK duration=<s> width=<w> height=<h>`, `VMTC_REC_KILLED`, `VMTC_REC_INVALID`.
+- Serial-log markers printed by the guest: `VMTC_SEED_DONE` (every `CloudInitSeed`), `VMTC_CUSTOMIZE_DONE` (reference-guest build only).
 - In-image script names: `vmtc-entrypoint`, `vmtc-rec`.
 - Container paths: `/vm/...`.
 - Container ports: 4444, 4445, 5900+i.
@@ -65,7 +71,12 @@ In the implementation, each value is stored in **exactly one** file, given in th
 - `${IMAGE_GUEST_NAME}`
 - `${LABEL_PREFIX}`
 
-It fails if any appears outside its *Lives in* file, generated sources, and the documented allow-list (this PLAN.md and the user-facing `README.md`; PLAN-STEPS.md step 1.4).
+Rules (implemented by the `checkParameterHygiene` task, §11.5):
+
+- `git grep --untracked -n -w -F -- <value>` for each value.
+- Allowed locations for every value: `gradle.properties`, anything under a `build/` directory, `docs/vm-testcontainer/*.md` (this plan and its companions hold the example values by design) and `README.md` (user documentation shows real coordinates).
+- `${GROUP_ID}` and `${BASE_PACKAGE}` are additionally allowed in `*.java` files: every `package`/`import`/`module` line contains them. The Java source tree is the second *Lives in* of `${BASE_PACKAGE}`.
+- Any other hit fails the task, printing `file:line`.
 
 Version numbers and short prefixes (`vmtc`, `VMTC_`) are excluded from the grep because they legitimately appear in fixed strings.
 
@@ -84,7 +95,7 @@ Version numbers and short prefixes (`vmtc`, `VMTC_`) are excluded from the grep 
 |------------|-----|
 | Run commands, copy files | QEMU guest agent (QGA) |
 | Screenshots, keyboard, hot-plug | QEMU monitor protocol (QMP) |
-| One VNC server per screen | exposed to library users |
+| One VNC server per screen | exposed to library users; unauthenticated, bound to loopback by default (D8) |
 | Screen recording | one WebM (VP8) per screen, recorded from that screen's VNC by GStreamer `rfbsrc` |
 | Audio | separate WAV via QEMU `wavcapture` |
 | Hot-plug | USB storage/HID, PCIe disk, PCIe NIC, CD media change, memory; vCPU under KVM only |
@@ -113,11 +124,14 @@ A pre-customized Rocky 9 reference guest is shipped as a containerDisk (§10.3).
 | b | Use `rfbsrc incremental=false` | Static screens otherwise produce no frames **[V]** |
 | c | Judge a recording by validating its file | `gst-launch` exits 1 after a normal SIGINT stop **[V]** |
 | d | Use VNC `share=force-shared` | An exclusive client otherwise disconnects recorders **[V]** |
-| e | Set VNC passwords per display with QMP `set_password` | `change-vnc-password` sets only the default display **[V]** |
+| e | Override `start()` and rethrow the library's own exception found in the `ContainerLaunchException` cause chain | Testcontainers wraps every start-up failure (`GenericContainer.doStart`/`tryStart`, checked by `javap` on 2.0.5) **[V]**; without this no test can assert `KvmUnavailableException` etc. |
 | f | Guests need the QGA RPC filter relaxed **and** `semanage permissive -a virt_qemu_ga_t` | SELinux otherwise blocks guest-exec **[V]** |
 | g | Secondary screens are dark until the guest modesets them | Expected; plan for it **[V]** |
 | h | Group-restricted `/dev/kvm` (`0660`) needs annotation `run.oci.keep_original_groups=1`. Never use `GroupAdd keep-groups` | keep-groups breaks container start **[V]** |
 | i | QMP TCP accepts **one** client at a time, so the entrypoint uses a second, internal QMP socket | **[V]** |
+| j | A builder call beats a system-property/env override; overrides only replace defaults (D9) | Otherwise `-D<prefix>.kvm=DISABLE` on the TCG CI job silently neuters `withKvm(REQUIRE)` tests |
+| k | Pair the cache's `FileChannel.lock()` with a per-key in-JVM lock | A second thread locking the same file in one JVM gets `OverlappingFileLockException`, it does not wait [D] |
+| l | Set `PublishAllPorts=false` and bind exactly the needed ports | Testcontainers publishes every `EXPOSE`d port on `0.0.0.0` otherwise [D] |
 
 ---
 
@@ -160,7 +174,7 @@ These are the original asks and decisions. The **testable** requirements derived
 | R6 | Screenshots, per screen | §9.7 | REQ-DISP-*, REQ-KEY-* |
 | R7 | Audio recording, **separate WAV** files | §9.9 | REQ-AUD-* |
 | R8 | Screen recording: **GStreamer records each screen's VNC; one video per screen** | §7.2, §9.8 | REQ-REC-* |
-| R9 | **VNC for display output, exposed to library users** | §8.3, §9.7 | REQ-VNC-* |
+| R9 | **VNC for display output, exposed to library users** | §8.3, §9.7 | REQ-VNC-01, 02, 05 |
 | R10 | Hot-plug simulation | §9.10 | REQ-HOT-* |
 | R11 | Repos: UBI first, then EPEL, with Rocky as fallback | §6.2 | REQ-IMG-02 |
 | R12 | Use `/dev/kvm` when available; work without it | §8.2, §9.6 | REQ-KVM-* |
@@ -172,6 +186,10 @@ These are the original asks and decisions. The **testable** requirements derived
 | D5 | Screens: **1..N configurable**, default 1, maximum 4 | §8.3 | REQ-DISP-01 |
 | D6 | Runner variants: **slim** (no GStreamer) and **media** (GStreamer) | §6.1 | REQ-IMG-03, REQ-REC-04 |
 | D7 | SELinux guests: `semanage permissive -a virt_qemu_ga_t` | §10.1 | REQ-GUEST-02 |
+| D8 | **No VNC authentication.** Test VMs are short-lived on an isolated network; VNC binds to loopback by default. `withVncPassword` and the per-display `set_password` step are dropped | §8.3 | REQ-VNC-03/04, REQ-REC-05 retired |
+| D9 | **Precedence:** builder call > system property > environment variable > default. Overrides change defaults only | §9.1 | REQ-CFG-01 |
+| D10 | **Test stack:** JUnit 5.14.x + Allure Java 2.35.5 (not Allure Java 3 / JUnit 6) | §0, §11.4 | REQ-BLD-07 |
+| D11 | **Reporting:** Allure report per CI job as a downloadable artifact (single-file HTML); no hosted report | §11.4, §12 | REQ-BLD-07 |
 
 ---
 
@@ -213,6 +231,7 @@ Legend:
 | Several `-qmp` monitors may coexist, e.g. TCP and Unix. A TCP QMP chardev serves **one client at a time**: a second client gets no greeting while the first is connected | [V] |
 | `tini` as PID 1 reaps orphaned children (no zombies). With QEMU as PID 1, stopped recorders stayed zombies | [V] |
 | Red Hat calls direct `qemu-kvm` use and TCG "unsupported". Acceptable for test infrastructure | [V] |
+| Rocky 9 `edk2-ovmf-20241117-8.el9` ships `/usr/share/edk2/ovmf/OVMF_CODE.fd`, `OVMF_CODE.secboot.fd`, `OVMF_CODE.cc.fd`, `OVMF_VARS.fd`, `OVMF_VARS.secboot.fd` (package file list, 2026-10-18). Booting with them is not yet exercised | [V] (paths) / [U] (boot) |
 
 ### 3.3 Measured on GitHub-hosted runners (4 vCPU, 16 GB)
 
@@ -265,6 +284,8 @@ Legend:
 | containerDisk extraction (`createContainerCmd` + `copyArchiveFromContainerCmd`) is byte-exact on Docker 29.8, Podman 4.9.3 and 5.7.0 when copying a known file path. Copying the `/disk/` **directory** yields entries `disk/` (dir) + `disk/<file>` (file) on Docker 29.8 | [V] |
 | Directory copy of `/disk/` on Podman 4.9.3 and 5.7.0 gives the same `disk/` (dir) + `disk/<file>` (file) entries, byte-exact | [V] (run 5) |
 | `ExecConfig` (`execInContainer(ExecConfig)` with `envVars`) and `RemoteDockerImage(DockerImageName)` exist in testcontainers-2.0.5.jar | [D] (javap) |
+| `GenericContainer.doStart()` and `tryStart()` wrap any failure from `configure()`, the wait strategy and `containerIsStarted` in `ContainerLaunchException` (javap of 2.0.5) | [V] |
+| `PullPolicy.alwaysPull()`, `PullPolicy.defaultPolicy()` and `RemoteDockerImage.withImagePullPolicy(ImagePullPolicy)` exist in 2.0.5; the default policy pulls only when the image is not cached locally | [V] (javap) / [D] |
 
 ### 3.7 Image downloads (R13)
 
@@ -316,25 +337,36 @@ Principles:
 
 ```
 ${ROOT_PROJECT}/
-├─ settings.gradle               rootProject.name='${ROOT_PROJECT}'; include 'lib','junit5','images','it'
+├─ settings.gradle               rootProject.name='${ROOT_PROJECT}'; include 'lib','junit5','test-support','images','it'
 ├─ gradle.properties             group, version, artifactLib, artifactJunit, basePackage, imageRegistry,
 │                                imageRunnerName, imageGuestName, imageTagSuffix, labelPrefix, syspropPrefix,
-│                                envPrefix, cacheDirName, javaRelease, ubiImage      (§0)
-├─ gradle/libs.versions.toml     testcontainers, junit-bom, jackson-databind, commons-compress, slf4j, assertj
+│                                envPrefix, cacheDirName, javaRelease, ubiImage, reqDocUrl,
+│                                traceabilityRequireFullCoverage                         (§0, §11.5)
+├─ gradle/libs.versions.toml     testcontainers, junit-bom, junit-platform-launcher, jackson-databind, commons-compress,
+│                                xz, zstd-jni, slf4j, assertj, allure-bom, allure-commandline
 ├─ gradle/wrapper/…              ${GRADLE_VERSION}
+├─ build.gradle                  root tasks: checkParameterHygiene, checkRequirementTraceability, checkDependencies,
+│                                allureReport (§11.4, §11.5)
 ├─ lib/        (${ART_LIB})      java-library + maven-publish + generateConstants (§11.3)
+│  ├─ src/main/java/module-info.java
 │  ├─ src/main/java/<${BASE_PACKAGE} as path>/…          (§9.1)
 │  ├─ src/main/resources/<${BASE_PACKAGE} as path>/display/vmtc-fb-activate.py   (Appendix A.4)
-│  └─ src/test/java/…            unit tests (no container engine)
-├─ junit5/     (${ART_JUNIT})    @VmTest extension (§9.13)
+│  └─ src/test/java/…            unit tests U1–U17 (no container engine)
+├─ junit5/     (${ART_JUNIT})    @VmTest extension (§9.13); src/test/java holds T34
+├─ test-support/                 NOT published. @Requirement, RequirementExtension, RequirementsCatalog,
+│  │                             RequirementsCheck (main), Evidence (§11.4); resources get a copy of
+│  └─ src/main/…                 docs/vm-testcontainer/REQUIREMENTS.md at build time
 ├─ images/
 │  ├─ runner/  Containerfile (§6.3), repos/epel.repo, repos/rocky.repo (A.1, A.2),
 │  │           scripts/vmtc-entrypoint (§7.1), scripts/vmtc-rec (§7.2)
-│  ├─ guest/   guest.properties, customize.sh (§10.3), seed-template/ (§10.2)
-│  └─ build.gradle   buildRunnerSlim, buildRunnerMedia, verifyRunnerImages, buildGuestDisk, pushImages (§11.2)
+│  ├─ guest/   guest.properties, customize.sh (§10.3)
+│  └─ build.gradle   buildRunnerSlim, buildRunnerMedia, verifyRunnerImages, downloadGuestBase, buildGuestDisk,
+│                    pushImages (§11.2)
 ├─ it/                           integration tests against real Podman (§13); not published
-│  └─ fixtures/                  test-registry.sh (T27/T28, PLAN-STEPS.md step 3.6), kvm-scenario.sh (compat, step 1.25)
-└─ docs/vm-testcontainer/        PLAN.md, REQUIREMENTS.md, PLAN-STEPS.md (copied from this plan at adoption)
+│  ├─ src/test/java/…            VmIT base class, VmEvidence, TestImages, T1–T37 (incl. KvmCompatIT, OciAuthIT)
+│  └─ fixtures/                  test-registry.sh (T27/T28), kvm-scenario.sh (T35)
+├─ docs/vm-testcontainer/        PLAN.md, REQUIREMENTS.md, PLAN-STEPS.md (copied from this plan at adoption)
+└─ README.md                     user documentation (PLAN-STEPS.md step 6.6)
 ```
 
 ---
@@ -361,7 +393,7 @@ ${ROOT_PROJECT}/
 
 When Rocky moves `${ROCKY_RELEASE}` to `vault.rockylinux.org`, change only the host in `rocky.repo`. As of 2026-10-18, `pub/rocky/9.8` is live and `vault/rocky/9.8` returns 404 **[V]**.
 
-### 6.3 Containerfile (normative; `images/runner/Containerfile`)
+### 6.3 Containerfile (normative; `images/runner/Containerfile`) **[U]** until the first `verifyRunnerImages` run (the spike built an equivalent `Containerfile.spike` **[V]**)
 
 ```dockerfile
 ARG UBI_IMAGE
@@ -385,7 +417,7 @@ RUN sed -i '/^\[/a priority=10' /etc/yum.repos.d/ubi.repo \
  && mkdir -p /vm/base /vm/run /vm/out /vm/seed
 COPY scripts/ /usr/local/bin/
 RUN chmod 0755 /usr/local/bin/vmtc-entrypoint /usr/local/bin/vmtc-rec
-EXPOSE 4444 4445 5900 5901 5902 5903
+EXPOSE 4444 4445 5900
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/vmtc-entrypoint"]
 ```
 
@@ -397,19 +429,22 @@ Notes:
 - The `rpm -q redhat-release` line is a guard: the build fails if a Rocky release package sneaks in.
 - `tini` without `-g`: SIGTERM reaches `vmtc-entrypoint`, which shuts QEMU down through the internal QMP socket (§7.1 step 10).
 - The container runs as root inside. Under rootless Podman, that is the invoking host user.
+- `EXPOSE` is informational only: the library publishes exactly the ports it needs with `PublishAllPorts=false` (§9.2 step 4).
 
 ### 6.4 Image verification (`verifyRunnerImages`)
 
-Run each check inside every built image; all must succeed:
+Run each check inside every built image (`<engine> run --rm --entrypoint /bin/bash <image> -c '<check>'`) unless marked *host*; all must succeed. The REQUIREMENTS.md rows in brackets are what each check proves.
 
-1. `/usr/libexec/qemu-kvm -accel help | grep -qx tcg`
-2. `/usr/libexec/qemu-kvm -device help` lists every device in §3.2 (rows *Display*, *Sound*, *Hot-plug*).
-3. **media only:** `gst-inspect-1.0 <e>` succeeds for `rfbsrc`, `vp8enc`, `webmmux`, `videorate`, `videoconvert`.
-4. `rpm -q redhat-release` succeeds, and `rpm -qa 'rocky-*'` is empty.
-5. `test -x /usr/bin/tini`
-6. On the host: `podman image inspect --format '{{index .Labels "<labelPrefix>.variant"}}' <image>` equals the variant.
-7. Repository configuration (REQ-IMG-02): `grep -h '^priority=' /etc/yum.repos.d/ubi.repo | sort -u` prints only `priority=10`; `/etc/yum.repos.d/epel.repo` contains `priority=20`; every section of `/etc/yum.repos.d/rocky.repo` has `priority=90` and the `excludepkgs` line of Appendix A.2; every `.repo` file under `/etc/yum.repos.d/` that the build added has `gpgcheck=1`.
-8. **slim only:** `command -v gst-launch-1.0` fails (REQ-IMG-03).
+1. `/usr/libexec/qemu-kvm -accel help | grep -qx tcg` [REQ-IMG-04]
+2. `/usr/libexec/qemu-kvm -device help` lists every one of: `VGA`, `secondary-vga`, `ich9-intel-hda`, `hda-duplex`, `virtio-serial-pci`, `virtserialport`, `qemu-xhci`, `usb-storage`, `usb-kbd`, `usb-tablet`, `usb-mouse`, `pcie-root-port`, `virtio-blk-pci`, `virtio-net-pci`, `virtio-scsi-pci`, `scsi-cd`, `pc-dimm` [REQ-IMG-04]
+3. **media only:** `gst-inspect-1.0 <e>` succeeds for `rfbsrc`, `vp8enc`, `webmmux`, `videorate`, `videoconvert` [REQ-IMG-03]
+4. `rpm -q redhat-release` succeeds, and `rpm -qa 'rocky-*'` prints nothing [REQ-IMG-01]
+5. *host:* `<engine> image inspect --format '{{index .Config.Entrypoint 0}}' <image>` prints `/usr/bin/tini` [REQ-IMG-05]
+6. *host:* `<engine> image inspect --format '{{index .Labels "<labelPrefix>.variant"}}' <image>` equals the variant [REQ-IMG-03]
+7. Repository configuration [REQ-IMG-02]: `grep -h '^priority=' /etc/yum.repos.d/ubi.repo | sort -u` prints only `priority=10`; `/etc/yum.repos.d/epel.repo` contains `priority=20`; every section of `/etc/yum.repos.d/rocky.repo` has `priority=90` and the `excludepkgs` line of Appendix A.2; every `.repo` file the build added has `gpgcheck=1`.
+8. **slim only:** `! command -v gst-launch-1.0` [REQ-IMG-03]
+9. `. /etc/os-release && [ "$ID" = rhel ] && [ "$VERSION_ID" = <tag of ${UBI_IMAGE}, e.g. 9.8> ]` [REQ-IMG-01]
+10. **[U]** Resolution order [REQ-IMG-02]: `dnf -q repoquery --installed --qf '%{from_repo}' qemu-kvm-core` prints `rocky-fallback-appstream`; `tini` → `epel9`; `bash` → a repo id starting with `ubi-9-`. If `%{from_repo}` is not supported by the image's dnf, use `dnf -q repoquery --latest-limit 1 --qf '%{repoid}' <pkg>` instead and record the change in PLAN-STEPS.md §D.
 
 ---
 
@@ -417,7 +452,7 @@ Run each check inside every built image; all must succeed:
 
 ### 7.1 `vmtc-entrypoint` (bash, `set -euo pipefail`)
 
-**Inputs:** environment variables, all set by Java.
+**Inputs:** environment variables. Java always sets every one of them; the script **also** applies the defaults below with `${VAR:-default}` so it can be run by hand (PLAN-STEPS.md step 1.8).
 
 | Env var | Default | Meaning |
 |---------|---------|---------|
@@ -426,10 +461,9 @@ Run each check inside every built image; all must succeed:
 | `VM_MAXCPUS` | `max(4, VM_CPUS)` | Hot-plug ceiling |
 | `VM_MEM_MB` | `2048` | Boot RAM |
 | `VM_MEM_SLOTS` | `4` | DIMM slots |
-| `VM_MAXMEM` | `8G` | Hot-plug memory ceiling |
+| `VM_MAXMEM` | `8G` | Hot-plug memory ceiling (Java guarantees `VM_MAXMEM ≥ VM_MEM_MB`, §9.2) |
 | `VM_SCREENS` | `1` | 1..4 heads |
 | `VNC_BIND` | `0.0.0.0` | Bind inside the container |
-| `VNC_PASSWORD_ENABLED` | `0` | `1` → `password=on` on every VNC server |
 | `VM_HOTPLUG_PORTS` | `4` | Number of `pcie-root-port`s `hp1..hpN` (0..8) |
 | `VM_FIRMWARE` | `bios` | `bios` or `uefi` |
 | `VM_OVERLAY_SIZE` | *(empty)* | Optional overlay virtual size, e.g. `20G` |
@@ -442,26 +476,35 @@ Run each check inside every built image; all must succeed:
 2. `FMT=$(qemu-img info --output=json /vm/base/disk.img | jq -r .format)`
 3. `qemu-img create -q -f qcow2 -F "$FMT" -b /vm/base/disk.img /vm/run/overlay.qcow2 ${VM_OVERLAY_SIZE:-}`
 4. If `/vm/seed/user-data` exists:
-   `xorriso -as mkisofs -quiet -V cidata -J -r -o /vm/run/seed.iso /vm/seed/user-data /vm/seed/meta-data` (also `/vm/seed/network-config` if present).
+   `xorriso -as mkisofs -quiet -V cidata -J -r -o /vm/run/seed.iso /vm/seed/user-data /vm/seed/meta-data`
 5. Resolve the accelerator:
    - `VM_ACCEL=kvm` and `/dev/kvm` is not readable and writable → print `VMTC_ERROR kvm requested but /dev/kvm unusable` and exit 3.
    - Print `VMTC_ACCEL kvm|tcg`.
 6. If `VM_FIRMWARE=uefi`: `cp /usr/share/edk2/ovmf/OVMF_VARS.fd /vm/run/OVMF_VARS.fd`
-7. Build the QEMU argument array exactly as in §8.1. Print `VMTC_QEMU_STARTING <epoch>`.
-8. Start QEMU **in the background**. Poll every 50 ms, for up to 30 s, until `(exec 3<>/dev/tcp/127.0.0.1/4445)` succeeds.
+7. Build the QEMU argument **array** exactly as in §8.1 (no `eval`; `VM_EXTRA_ARGS` is word-split into the array). Print `VMTC_QEMU_STARTING <epoch>`.
+8. **Install the trap before QEMU starts:** `trap on_term TERM INT`, where `on_term` runs
+   `printf '{"execute":"qmp_capabilities"}\n{"execute":"quit"}\n' | socat -t2 - UNIX-CONNECT:/vm/run/qmp-internal.sock` **[V]**, waits up to 10 s for QEMU to exit, then `kill -9 "$QPID"` if it is still running.
+9. Start QEMU **in the background**: `"${ARGS[@]}" & QPID=$!`. Poll every 50 ms, for up to 30 s, until `(exec 3<>/dev/tcp/127.0.0.1/4445)` succeeds.
    - This uses the QGA port, **not** the QMP port, so it never occupies the single QMP TCP client slot.
    - If QEMU exits first: print `VMTC_ERROR qemu exited <code>` and exit 4.
-9. Print `VMTC_READY`, then `wait` on QEMU and exit with its status.
-10. `trap` on TERM/INT:
-    - Run `printf '{"execute":"qmp_capabilities"}\n{"execute":"quit"}\n' | socat -t2 - UNIX-CONNECT:/vm/run/qmp-internal.sock` **[V]**.
-    - Wait up to 10 s for QEMU. If it is still running, `kill -9` it.
+10. Print `VMTC_READY`.
+11. Wait for QEMU and exit with **its** status. A trapped signal interrupts `wait`, so loop:
+
+    ```bash
+    set +e
+    while :; do
+      wait "$QPID"; RC=$?
+      kill -0 "$QPID" 2>/dev/null || break
+    done
+    exit "$RC"
+    ```
 
 **Graceful shutdown happens only through Java `stop()`** (§9.2): it stops open recordings, sends QMP `quit` over the Java connection, then lets Testcontainers stop the container. The trap only covers a manual `podman stop`.
 
 ### 7.2 `vmtc-rec` (bash; media image only)
 
 ```
-vmtc-rec start  <name> <screen-index> <fps> <bitrate-bps>      # env VNC_PASSWORD optional
+vmtc-rec start  <name> <screen-index> <fps> <bitrate-bps>
 vmtc-rec stop   <name> [timeout-seconds=10]
 vmtc-rec status <name>
 ```
@@ -471,22 +514,22 @@ vmtc-rec status <name>
 1. Run detached (`setsid … < /dev/null > /vm/out/<name>.log 2>&1 &`):
 
    ```
-   gst-launch-1.0 -q -e rfbsrc host=127.0.0.1 port=$((5900+i)) view-only=true shared=true incremental=false ${VNC_PASSWORD:+password=$VNC_PASSWORD} \
+   gst-launch-1.0 -q -e rfbsrc host=127.0.0.1 port=$((5900+i)) view-only=true shared=true incremental=false \
      ! videorate ! video/x-raw,framerate=<fps>/1 ! videoconvert \
      ! vp8enc deadline=1 cpu-used=8 threads=2 target-bitrate=<bitrate> ! webmmux ! filesink location=/vm/out/<name>.webm
    ```
 
-2. Write the PID to `/vm/run/<name>.pid` and print `VMTC_REC_STARTED <pid>`.
+2. Write the PID to `/vm/run/<name>.pid` and print `VMTC_REC_STARTED <pid>`. If `gst-launch-1.0` is missing or exits within 1 s, print `VMTC_REC_INVALID` and the log instead (Java maps that to `RecordingException`, §9.8).
 
-This is the verified `gst-record.sh` + `rec.sh` **[V]**.
+This is the verified `gst-record.sh` + `rec.sh` **[V]** (the spike also verified `rfbsrc password=…`; passwords were dropped by D8).
 
 **`stop`:**
 
 1. `kill -INT <pid>`.
 2. Poll every 100 ms. The process counts as alive only if `/proc/<pid>` exists **and** its `State:` is not `Z`. Give up after the timeout.
 3. If it is still alive: `kill -9` it and print `VMTC_REC_KILLED`.
-4. Validate with `gst-discoverer-1.0 /vm/out/<name>.webm`:
-   - On success, print `VMTC_REC_OK duration=<seconds> width=<w> height=<h>`.
+4. Validate with `gst-discoverer-1.0 /vm/out/<name>.webm`. Its output contains lines `Duration: H:MM:SS.nnnnnnnnn`, `Width: <w>`, `Height: <h>` **[V]**.
+   - On success, print `VMTC_REC_OK duration=<seconds> width=<w> height=<h>`, where `<seconds>` is the duration converted to **decimal seconds with 3 fractional digits** (e.g. `duration=12.346`).
    - Otherwise print `VMTC_REC_INVALID` followed by the last 20 log lines.
 5. **Ignore gst-launch's exit code** (it is 1 even on success) **[V]**.
 
@@ -507,7 +550,7 @@ This is the verified `gst-record.sh` + `rec.sh` **[V]**.
   -display none
   for i in 0..VM_SCREENS-1:
      -device {i==0: VGA | else: secondary-vga},id=video$i
-     -vnc ${VNC_BIND}:$i,id=vnc$i,display=video$i,share=force-shared[,password=on]
+     -vnc ${VNC_BIND}:$i,id=vnc$i,display=video$i,share=force-shared
   -qmp tcp:0.0.0.0:4444,server=on,wait=off
   -qmp unix:/vm/run/qmp-internal.sock,server=on,wait=off
   -chardev socket,id=qga0,host=0.0.0.0,port=4445,server=on,wait=off
@@ -535,7 +578,6 @@ This is the verified `gst-record.sh` + `rec.sh` **[V]**.
 | Seed ISO path | `/vm/seed.iso` | `/vm/run/seed.iso` |
 | Overlay | always 20G | `VM_OVERLAY_SIZE` |
 | `-name` | `spikevm` | `vm` |
-| `password=on` | not set (verified separately with an otherwise identical line [V]) | `[,password=on]` |
 | UEFI | not exercised | §8.4 [U] |
 
 ### 8.2 Acceleration (R12)
@@ -552,27 +594,23 @@ This is the verified `gst-record.sh` + `rec.sh` **[V]**.
 - **PREFER fallback:** when the result is TCG under PREFER although KVM was intended, log a WARN with the §9.6 remediation text.
 - **TCG timeouts:** every default timeout is multiplied by `tcgTimeoutFactor` (default **6**; measured QGA-ready ratio about 4–5.5).
 
-### 8.3 Screens and VNC (D5, R9)
+### 8.3 Screens and VNC (D5, R9, D8)
 
-- `withScreens(n)`, n = 1..4 (default 1). Head 0 is `VGA`; heads 1..n-1 are `secondary-vga` **[V]** (n=2).
-- **Ports:** head *i* has a VNC server on container port `5900+i`, published per §9.2 step 4.
+- `withScreens(n)`, n = 1..4 (default 1). Head 0 is `VGA`; heads 1..n-1 are `secondary-vga` **[V]** (n=2; n=4 is exercised by T6).
+- **Ports:** head *i* has a VNC server on container port `5900+i`, published per §9.2 step 4 on the configured bind address (default `127.0.0.1`).
 - **Sharing:** `share=force-shared` is always on.
-- **Password:**
-  - `withVncPassword(pw)` adds `password=on`.
-  - After `VMTC_READY`, Java calls `set_password {protocol:"vnc", password, display:"vnc<i>"}` for **every** i **[V]**.
-  - Recorders receive the password through env `VNC_PASSWORD` (§9.8).
-- **Password limits:** VNC auth uses at most 8 characters [D]. Java rejects longer passwords with `IllegalArgumentException`. Passwords are also restricted to printable ASCII without whitespace, because they are passed through a GStreamer pipeline string.
+- **Authentication:** none (D8). The spike verified per-display `set_password` **[V]** should it ever be needed; it is not part of this plan.
 - **Dark secondary heads:** until the guest modesets them, they show "Guest has not initialized the display (yet)" at 640×480 [V]. Use `VmScreen.forceModeset()` for console-only guests.
 
-### 8.4 UEFI (`VM_FIRMWARE=uefi`) **[U]**
+### 8.4 UEFI (`VM_FIRMWARE=uefi`)
 
 ```
 -drive if=pflash,format=raw,unit=0,readonly=on,file=/usr/share/edk2/ovmf/OVMF_CODE.fd
 -drive if=pflash,format=raw,unit=1,file=/vm/run/OVMF_VARS.fd
 ```
 
-- The file names come from `edk2-ovmf` and were not exercised. M2 acceptance test T22 settles them.
-- If they differ, take the paths from `rpm -ql edk2-ovmf` in the image and update this section and the entrypoint together.
+- Both files exist in Rocky 9's `edk2-ovmf-20241117-8.el9` **[V]** (§3.2). The non-secure-boot `OVMF_CODE.fd` needs no `smm=on`. Booting the reference guest with them is **[U]**; T22 settles it.
+- If T22 fails because the guest is not UEFI-capable, PLAN-STEPS.md step 2.6 says what to do; do not silently drop the test.
 
 ---
 
@@ -582,15 +620,17 @@ This is the verified `gst-record.sh` + `rec.sh` **[V]**.
 
 | Package | Types |
 |---------|-------|
-| `${BASE_PACKAGE}` | `QemuVmContainer`, `VmImage`, `KvmMode`, `Accelerator`, `RunnerVariant`, `Firmware`, `ExecRequest`, `GuestExecResult`, `VmtcConstants` (generated), `VmtcCleanup`, `VmtcException` and its subclasses `KvmUnavailableException`, `GuestAgentTimeoutException`, `GuestCommandDisabledException`, `GuestAgentConfinedException`, `GuestExecTimeoutException`, `RecordingException`, `HotplugTimeoutException`, `ImageChecksumException`, `ImageAuthException` |
+| `${BASE_PACKAGE}` | `QemuVmContainer`, `VmImage` (sealed interface; nested records `PathImage(Path file)`, `UrlImage(URI url, UrlOptions options)`, `OciImage(DockerImageName image, OciOptions options)`, `BakedImage()`), `KvmMode`, `Accelerator`, `RunnerVariant`, `Firmware`, `ExecRequest` (record: `List<String> argv`, `Map<String,String> env`, `byte[] stdin`, `Duration timeout`; static `of(String... argv)` + `with*` copies), `GuestExecResult` (record, §9.4), `Warnings` (§9.11), `VmtcConstants` (generated), `VmtcCleanup`, `VmtcException` and its subclasses `KvmUnavailableException`, `GuestAgentTimeoutException`, `GuestCommandDisabledException`, `GuestAgentConfinedException`, `GuestExecTimeoutException`, `RecordingException`, `HotplugTimeoutException`, `ImageChecksumException`, `ImageAuthException`, `ImageDownloadException` |
 | `${BASE_PACKAGE}.qmp` | `QmpClient`, `QmpEvent`, `QmpException` (extends `VmtcException`) |
 | `${BASE_PACKAGE}.qga` | `GuestAgentClient` |
-| `${BASE_PACKAGE}.image` | `VmImageCache`, `ContainerDiskExtractor`, `ImageDownloader`, `UrlOptions`, `OciOptions`, `HttpCredentials`, `RegistryCredentials`, `Compression` (`AUTO`, `NONE`, `GZIP`, `XZ`, `ZSTD`), `Secret` |
+| `${BASE_PACKAGE}.image` | `VmImageCache`, `ContainerDiskExtractor`, `ImageDownloader`, `UrlOptions`, `OciOptions`, `HttpCredentials`, `RegistryCredentials`, `Compression` (`AUTO`, `NONE`, `GZIP`, `XZ`, `ZSTD`), `Secret`, `Qcow2Header` |
 | `${BASE_PACKAGE}.display` | `VmScreen`, `VncEndpoint`, `ScreenRecording`, `RecordingOptions`, `KeyboardInput` |
 | `${BASE_PACKAGE}.audio` | `AudioRecording` |
-| `${BASE_PACKAGE}.hotplug` | `Devices`, `DeviceSpec` (sealed), `DiskBus` (`USB`, `VIRTIO`), `HotplugHandle`, `CdromDrive` |
+| `${BASE_PACKAGE}.hotplug` | `Devices`, `DeviceSpec` (sealed interface; nested records `UsbStorage(Path image, boolean readOnly)`, `UsbHid(HidKind kind)` with enum `HidKind {KEYBOARD, TABLET, MOUSE}`, `VirtioDisk(Path image, boolean readOnly)`, `BlankDisk(String size, DiskBus bus)`, `Nic(String mac)` (`mac` nullable), `Cpu()`, `Memory(int sizeMiB)`), `DiskBus` (`USB`, `VIRTIO`), `HotplugHandle`, `CdromDrive` |
 | `${BASE_PACKAGE}.cloudinit` | `CloudInitSeed` |
-| `${BASE_PACKAGE}.internal` | `KvmDetector`, `VmWaitStrategy`, `SerialLogTailer`, `PortBindings`, `Json`, `Backoff`. Not exported: `module-info` exports every package above except `internal` |
+| `${BASE_PACKAGE}.internal` | `KvmDetector`, `KvmDecision`, `Overrides`, `StartupMessages`, `VmWaitStrategy`, `SerialLogTailer`, `PortBindings`, `Json`, `Backoff`. Not exported: `module-info` exports every package above except `internal` |
+
+Every exception class declares `private static final long serialVersionUID = 1L;` (the build uses `-Xlint:all -Werror`, §11.1).
 
 **Dependencies:**
 
@@ -598,21 +638,24 @@ This is the verified `gst-record.sh` + `rec.sh` **[V]**.
 |-------|--------------|
 | `api` | `org.testcontainers:testcontainers:${TESTCONTAINERS_VERSION}` |
 | `implementation` | `jackson-databind:${JACKSON_VERSION}`, `commons-compress:${COMMONS_COMPRESS_VERSION}`, `org.tukaani:xz:${XZ_VERSION}`, `com.github.luben:zstd-jni:${ZSTD_JNI_VERSION}` |
-| `testImplementation` | JUnit BOM, AssertJ, `slf4j-simple:${SLF4J_VERSION}` |
+| `testImplementation` | JUnit BOM `${JUNIT_VERSION}` + `junit-jupiter`, AssertJ, `slf4j-simple:${SLF4J_VERSION}`, `:test-support` |
+| `testRuntimeOnly` | `org.junit.platform:junit-platform-launcher` (Gradle 9 no longer adds it [D]) |
+
+`checkDependencies` (§11.5) fails the build when `:lib`'s `api`/`implementation` sets differ from the two rows above (REQ-BLD-03, REQ-OCI-06).
 
 **Runtime overrides.** Each key exists as system property `-D${SYSPROP_PREFIX}.<key>` and as environment variable `${ENV_PREFIX}<KEY_IN_UPPER_SNAKE>`, for example `-Dvmtc.runnerImageMedia` or `VMTC_RUNNER_IMAGE_MEDIA`.
 
-**Precedence:** system property > environment variable > builder call > default.
+**Precedence (D9):** **builder call > system property > environment variable > default.** An override changes the default a container starts from; a value the code sets explicitly always wins. An unparsable override value (for example `kvm=maybe`, `tcgTimeoutFactor=0`, `cleanup=yes`) throws `IllegalArgumentException("<key>: …")` at `start()`.
 
 | Key | Values | Default | Effect |
 |-----|--------|---------|--------|
-| `kvm` | `REQUIRE`, `PREFER`, `DISABLE` (case-insensitive) | `PREFER` | Overrides `withKvm` |
+| `kvm` | `REQUIRE`, `PREFER`, `DISABLE` (case-insensitive) | `PREFER` | Default for `withKvm` |
 | `cacheDir` | absolute path | `${XDG_CACHE_HOME:-~/.cache}/${CACHE_DIR_NAME}` | Image cache root |
 | `cleanup` | `true`, `false` | `true` | Orphan cleanup (§9.12) |
-| `runnerImage` | image ref | `VmtcConstants.defaultRunnerImage(SLIM)` | Slim runner |
-| `runnerImageMedia` | image ref | `VmtcConstants.defaultRunnerImage(MEDIA)` | Media runner |
+| `runnerImage` | image ref | `VmtcConstants.defaultRunnerImage(SLIM)` | Slim runner for the no-arg and `RunnerVariant` constructors |
+| `runnerImageMedia` | image ref | `VmtcConstants.defaultRunnerImage(MEDIA)` | Media runner, likewise. Neither applies to the `DockerImageName` constructor |
 | `guestImage` | image ref | `VmtcConstants.referenceGuestImage()` | Used by `VmImage.referenceGuest()` |
-| `tcgTimeoutFactor` | double > 0 | `6.0` | Overrides `withTcgTimeoutFactor` |
+| `tcgTimeoutFactor` | double > 0 | `6.0` | Default for `withTcgTimeoutFactor` |
 
 ### 9.2 `QemuVmContainer` (public API, normative)
 
@@ -620,30 +663,32 @@ This is the verified `gst-record.sh` + `rec.sh` **[V]**.
 public class QemuVmContainer extends GenericContainer<QemuVmContainer> {
   public QemuVmContainer();                                     // RunnerVariant.SLIM
   public QemuVmContainer(RunnerVariant variant);                // SLIM | MEDIA (image per §9.1 overrides)
-  public QemuVmContainer(DockerImageName runnerImage);          // custom/derived runner
+  public QemuVmContainer(DockerImageName runnerImage);          // custom/derived runner; variant read from the image label
 
-  // configuration (each returns this)
+  // configuration (each returns this; ranges are validated in the call → IllegalArgumentException)
   withVmImage(VmImage image)                    // REQUIRED. For derived runner images pass VmImage.baked()
-  withKvm(KvmMode mode)                         // default PREFER
-  withCpus(int boot) / withMaxCpus(int max)     // defaults 2 / max(4, boot)
-  withMemoryMb(int mb) / withMemoryHotplug(int slots, String maxmem)   // 2048 / 4, "8G"
+  withKvm(KvmMode mode)                         // default from override 'kvm', else PREFER
+  withCpus(int boot) / withMaxCpus(int max)     // defaults 2 / max(4, boot); boot ≥ 1, max ≥ boot
+  withMemoryMb(int mb) / withMemoryHotplug(int slots, String maxmem)   // 2048 / 4, "8G"; slots ≥ 0
   withScreens(int n)                            // 1..4, default 1
   withVncBindAddress(String hostIp)             // default "127.0.0.1"
-  withVncPassword(String pw)                    // 1..8 printable ASCII, no whitespace
   withHotplugPorts(int n)                       // 0..8, default 4
   withFirmware(Firmware f)                      // BIOS (default) | UEFI
   withCloudInit(CloudInitSeed seed)             // optional (§10.2)
-  withGuestAgentTimeout(Duration d)             // default 180 s, ×tcgTimeoutFactor under TCG
-  withExecTimeout(Duration d)                   // default 60 s, ×tcgTimeoutFactor under TCG
-  withTcgTimeoutFactor(double f)                // default 6.0
-  withSerialLogConsumer(Consumer<String> line)  // receives every serial-log line (§9.2 step 13)
+  withGuestAgentTimeout(Duration d)             // default 180 s (scaled under TCG); an explicit value is never scaled
+  withExecTimeout(Duration d)                   // default 60 s (scaled under TCG); explicit never scaled
+  withTcgTimeoutFactor(double f)                // default from override, else 6.0; > 0
+  withSerialLogConsumer(Consumer<String> line)  // receives every serial-log line (step 13)
   withQemuArgs(String... extra)                 // → VM_EXTRA_ARGS; any arg with whitespace → IllegalArgumentException
 
   // state
-  Accelerator accelerator();                    // KVM | TCG, from VMTC_ACCEL
+  Accelerator accelerator();                    // KVM | TCG, from VMTC_ACCEL (the source of truth after start)
+  RunnerVariant variant();                      // SLIM | MEDIA
   QmpClient qmp();
   GuestAgentClient guestAgent();
   KeyboardInput keyboard();
+  Map<String,Object> describe();                // the vm-config evidence of REQUIREMENTS.md §3.3 (Jackson-serialisable)
+  Map<String,Long> timings();                   // milliseconds from start(): containerRunning, vmtcReady, qgaReady, started
 
   // R3 / R4
   GuestExecResult exec(String... argv);                 // absolute argv[0] recommended
@@ -666,37 +711,38 @@ public class QemuVmContainer extends GenericContainer<QemuVmContainer> {
   CdromDrive cdrom();
 
   // artifacts
-  Path saveSerialLog(Path hostFile);
+  Path saveSerialLog(Path hostFile);                    // copies /vm/out/serial.log to hostFile and returns hostFile
+
+  @Override public void start();                        // see "start() override" below
 }
 ```
 
+**`start()` override (rule e, REQ-ERR-03).** `start()` calls `super.start()` inside `try`; on `ContainerLaunchException` it walks `getCause()` and rethrows the **first** `VmtcException` found (preserving it as-is); if none is found it throws `new VmtcException(e.getMessage(), e)`. Testcontainers wraps every start-up failure **[V]**, so without this no caller could catch `KvmUnavailableException` and friends.
+
+**Start-time validation** (before anything is created; all `IllegalArgumentException`): `withVmImage` was called; `VM_MAXMEM` ≥ `withMemoryMb` (parse `G`/`M` suffixes); override values parse (§9.1).
+
+**Runner variant.** For the `RunnerVariant` constructors it is the argument. For `QemuVmContainer(DockerImageName)` the library reads the image label `${LABEL_PREFIX}.variant` with `inspectImageCmd` after the image is pulled (in `configure()`); a missing or unknown label means `SLIM` plus one WARN.
+
 **Start sequence** (`configure()`, `containerIsStarting`, `containerIsStarted`):
 
-1. **Image:** resolve the `VmImage` to a cache file (§9.3), unless it is `baked()`.
-2. **Bind** the cache file read-only at `/vm/base/disk.img`. Use a docker-java `Bind` with `AccessMode.ro`.
-   - On SELinux-enforcing hosts (`/sys/fs/selinux/enforce` contains `1`), add `SELContext.shared` (`:z`). Only cache files are ever bound (§9.3.2).
-3. **KVM:** decide per §8.2 / §9.6, then apply `HostConfig.withDevices(...)` and, if needed, `withAnnotations(...)` in `withCreateContainerCmdModifier`.
-4. **Ports:**
-   - Call `withExposedPorts(4444, 4445, 5900, …, 5900+n-1)`.
-   - In the create-cmd modifier, replace `HostConfig.PortBindings` with `PortBinding(Ports.Binding.bindIp(addr), ExposedPort.tcp(p))` for each port, which keeps a random host port.
-   - `addr` is `127.0.0.1` for 4444 and 4445, and the configured VNC address for VNC ports.
-5. **Labels:**
-   - `${LABEL_PREFIX}.managed=true`
-   - `${LABEL_PREFIX}.version=<VmtcConstants.VERSION>`
-   - `${LABEL_PREFIX}.session=<UUID created once per JVM>`
-   - `${LABEL_PREFIX}.created=<epoch seconds>`
-6. **Env:** set §7.1 env. For a seed, add `withCopyToContainer(Transferable.of(bytes), "/vm/seed/user-data")` (also `meta-data`).
-7. **Wait strategy:** use `VmWaitStrategy` (custom `AbstractWaitStrategy`). Every 200 ms it reads the container logs:
+1. **Image:** resolve the `VmImage` to a cache file (§9.3), unless it is `BakedImage`.
+2. **Bind** the cache file read-only at `/vm/base/disk.img` with `withFileSystemBind(hostPath, "/vm/base/disk.img", BindMode.READ_ONLY, selinux)`, where `selinux` is `SelinuxContext.SHARED` when `/sys/fs/selinux/enforce` exists and contains `1`, else `SelinuxContext.NONE` [D]. Only cache files are ever bound (§9.3.2).
+3. **KVM:** `KvmDecision.decide(mode, detector)` (§9.6); apply `HostConfig.withDevices(...)` and, if needed, `withAnnotations(...)` in `withCreateContainerCmdModifier`.
+4. **Ports:** `withExposedPorts(4444, 4445, 5900, …, 5900+n-1)`. In the create-cmd modifier: `hostConfig.withPublishAllPorts(false)` (rule l) and replace `PortBindings` with `PortBinding(Ports.Binding.bindIp(addr), ExposedPort.tcp(p))` for each port, which keeps a random host port. `addr` is `127.0.0.1` for 4444 and 4445, and the configured VNC address for VNC ports.
+5. **Labels:** `${LABEL_PREFIX}.managed=true`, `${LABEL_PREFIX}.version=<VmtcConstants.VERSION>`, `${LABEL_PREFIX}.session=<UUID created once per JVM>`, `${LABEL_PREFIX}.created=<epoch seconds>`.
+6. **Env:** set §7.1 env. For a seed, add `withCopyToContainer(Transferable.of(seed.userData()), "/vm/seed/user-data")` and the same for `meta-data`.
+7. **Wait strategy:** `VmWaitStrategy` (custom `AbstractWaitStrategy`). Every 200 ms it reads the container logs:
 
    | Condition | Result |
    |-----------|--------|
    | `VMTC_READY` | ready |
-   | `VMTC_ERROR <msg>` or container exited, with exit code 3 or a message containing `kvm requested` | throw `KvmUnavailableException(msg)` |
-   | `VMTC_ERROR <msg>` or container exited, otherwise | throw `VmtcException(msg + last 50 log lines)` |
-   | 60 s elapsed (**not** scaled by the TCG factor) | timeout |
+   | container exited with code 3, or a `VMTC_ERROR` line containing `kvm requested` | throw `KvmUnavailableException(StartupMessages.kvmGroupRestricted() + "\n" + <the VMTC_ERROR line>)` (the §9.6 row-3 text first) |
+   | any other `VMTC_ERROR <msg>` or container exit | throw `VmtcException(msg + "\n" + StartupMessages.tail(logLines, 50))` |
+   | 60 s elapsed (**not** scaled) | throw `VmtcException("no VMTC_READY within 60 s\n" + tail 50) |
 
-8. **QMP:** connect to the mapped port 4444 and send `qmp_capabilities`. Parse `VMTC_ACCEL` from the logs and apply the PREFER WARN rule (§8.2).
-9. **VNC password:** if configured, call `set_password` for each display.
+   `StartupMessages.tail(lines, n)` returns the last `n` lines (all of them when fewer) joined by `\n` (U16).
+8. **QMP:** connect to the mapped port 4444 and send `qmp_capabilities`. Parse `VMTC_ACCEL` from the logs; `accelerator()` is now defined. Under PREFER, if KVM was intended but TCG resulted, emit the §9.6 row-3 WARN through `Warnings` (once per JVM). **Timeouts are derived now:** scaled defaults use `accelerator()`; explicit values stay as given.
+9. *(removed by D8; numbering kept so references stay valid)*
 10. **QGA readiness.**
     - **Seeded start first waits for the seed:** if a seed is configured, start the `SerialLogTailer` (step 13) now and block until a line contains `VMTC_SEED_DONE` (guest-agent timeout; on timeout throw `GuestAgentTimeoutException`). Only then continue. Reason: the seed relaxes the RPC filter and restarts the agent, so steps 11–12 would otherwise see the stock filter and fail. The spike harness waited for seed completion before its exec checks in the same way **[V]**.
     - Then repeat until the guest-agent timeout. Each attempt:
@@ -706,51 +752,60 @@ public class QemuVmContainer extends GenericContainer<QemuVmContainer> {
 
     If any step fails or times out: close the socket, sleep 1 s, and retry.
 
-    On overall timeout, throw `GuestAgentTimeoutException` with the last 50 serial-log lines. This is the verified `vmctl.py wait-qga` behaviour [V].
+    On overall timeout, throw `GuestAgentTimeoutException(... + "\n" + StartupMessages.tail(serialLines, 50))`. This is the verified `vmctl.py wait-qga` behaviour [V].
 11. **RPC filter check:** call `guest-info`. If `guest-exec` or `guest-file-open` has `enabled:false`, throw `GuestCommandDisabledException` [V].
     - Independently, any QGA error with class `CommandNotFound` and a desc containing `has been disabled` is mapped to `GuestCommandDisabledException` [V].
     - The message points to §10.1 G3/G4.
-12. **SELinux check:** `exec("/usr/bin/id","-Z")`. If stdout contains `virt_qemu_ga_t`:
+12. **SELinux check:** `exec("/usr/bin/id","-Z")`. A non-zero exit or empty stdout (non-SELinux guest) → skip this step. If stdout contains `virt_qemu_ga_t`:
     - Run `execShell("ls /lib/modules/$(uname -r) >/dev/null")`.
     - Non-zero exit with stderr containing `Permission denied` means the domain is enforcing: throw `GuestAgentConfinedException` (remediation G4). This exact denial was observed **[V]**.
 13. **Serial log:** if a consumer is set and the tailer is not already running (step 10), start `SerialLogTailer`.
     - It is a daemon thread that polls every 1 s: `execInContainer("tail","-c","+<offset+1>","/vm/out/serial.log")`.
     - It tracks the byte offset, strips `\r`, splits on `\n`, and keeps partial last lines.
+    - Lines read before the consumer was attached (the seed wait) are replayed to the consumer when it attaches (REQ-LIFE-07 "lines emitted before `start()` returned").
+14. Record `timings()`; cleanup (§9.12) ran once per JVM before step 1 of the **first** container.
 
 **`stop()`:**
-1. Stop every open `ScreenRecording` and `AudioRecording` (best effort, log failures).
-2. QMP `quit` with a 5 s timeout; ignore errors.
+1. Stop every open `ScreenRecording` and `AudioRecording` (best effort, log failures through `Warnings`).
+2. QMP `quit` with a 5 s timeout (not scaled); ignore errors.
 3. Close the clients.
 4. `super.stop()`.
 
 ### 9.3 VM images
 
 ```java
-public sealed interface VmImage {
-  static VmImage fromPath(Path file);                          // qcow2 or raw
-  static VmImage fromUrl(URI url);                             // http/https; no checksum → WARN (§9.3.5)
-  static VmImage fromUrl(URI url, UrlOptions options);         // sha256, credentials, compression (§9.3.5)
+public sealed interface VmImage permits VmImage.PathImage, VmImage.UrlImage, VmImage.OciImage, VmImage.BakedImage {
+  record PathImage(Path file) implements VmImage {}
+  record UrlImage(URI url, UrlOptions options) implements VmImage {}
+  record OciImage(DockerImageName image, OciOptions options) implements VmImage {}
+  record BakedImage() implements VmImage {}
+
+  static VmImage fromPath(Path file);                          // qcow2 (without backing file) or raw
+  static VmImage fromUrl(URI url);                             // http/https; = fromUrl(url, UrlOptions.defaults())
+  static VmImage fromUrl(URI url, UrlOptions options);         // sha256, credentials, compression, timeout (§9.3.5)
   static VmImage fromOci(String ociUrl);                       // "oci://registry/repo:tag" or "oci://registry/repo@sha256:…" (§9.3.6)
   static VmImage fromOci(String ociUrl, OciOptions options);   // explicit registry credentials
-  static VmImage fromContainerDisk(DockerImageName image);     // same as fromOci, typed reference; exactly one file under /disk/
+  static VmImage fromContainerDisk(DockerImageName image);     // same as fromOci, typed reference
+  static VmImage fromContainerDisk(DockerImageName image, OciOptions options);
   static VmImage referenceGuest();                             // fromContainerDisk(override 'guestImage' or VmtcConstants.referenceGuestImage())
   static VmImage baked();                                      // runner image already contains /vm/base/disk.img
 }
 ```
 
+`QemuVmContainer` dispatches with a `switch` over the sealed type. `describe()` reports the kind, a redacted locator (no user-info, query or secrets) and the cache key.
+
 #### 9.3.1 Cache (`VmImageCache`)
 
-- **Root:** `<cacheDir>/images/`, where `cacheDir` comes from §9.1. Entries are named `<key>.img`.
-- **Concurrency:** writers take `FileChannel.lock()` on `<key>.lock`, write `<key>.tmp-<pid>-<nanotime>`, then `Files.move(…, ATOMIC_MOVE)`.
+- **Instance:** `new VmImageCache(Path root)`; `QemuVmContainer` builds one from the `cacheDir` override. **Root:** `<cacheDir>/images/`. Entries are `<key>.img`, side files `<key>.meta.json` (HTTP revalidation data) and `<key>.lock`.
+- **Concurrency (rule k):** a writer first takes the per-key in-JVM lock (`ConcurrentHashMap<String, ReentrantLock>`), then `FileChannel.lock()` on `<key>.lock` (blocks against other JVMs), then re-checks whether `<key>.img` exists. It writes `<key>.tmp-<pid>-<nanotime>` and finishes with `Files.move(…, ATOMIC_MOVE)`. Readers only check for `<key>.img`.
 - **`fromPath`:**
-  - `key` = SHA-256 of the file content.
-  - The key is memoized in `<cacheDir>/index.json` by `(absolutePath, size, mtimeMillis)`.
+  - Reject with `IllegalArgumentException("qcow2 image has a backing file: <name>")` when `Qcow2Header.backingFile(file)` is non-empty. `Qcow2Header` reads the 104-byte header: magic `QFI\xfb` at offset 0; `backing_file_offset` = big-endian uint64 at offset 8; `backing_file_size` = big-endian uint32 at offset 16; a non-zero offset means a backing file, whose name is the UTF-8 bytes at that offset [D, qcow2 spec]. Files without the magic are treated as raw.
+  - `key` = SHA-256 of the file content, memoised in `<cacheDir>/index.json` by `(absolutePath, size, mtimeMillis)`. Schema: `{"entries":[{"path":"…","size":123,"mtimeMillis":456,"key":"<hex>"}]}`. `index.json` is rewritten under `<cacheDir>/index.lock` (file lock + the same in-JVM discipline).
   - If `<key>.img` is missing, **copy** the file (`Files.copy`). **Never hard-link**: the `:z` relabel and later edits of the user's file must not touch the cache entry.
-- **`fromUrl`:** see §9.3.5.
-  - Cache key = the SHA-256 if given.
-  - Without a checksum, `key` = `sha256("url:" + normalizedUrl)`, and `<key>.meta.json` stores `ETag` and `Last-Modified`.
+- **`fromUrl`:** see §9.3.5. Cache key = the SHA-256 if given; without a checksum, `key` = `sha256("url:" + normalizedUrl)` and `<key>.meta.json` stores `ETag` and `Last-Modified`.
 - **`fromOci` / `fromContainerDisk`:** `key` = `sha256(imageId + "/" + fileName)` (§9.3.3, §9.3.6).
-- **Eviction:** none automatic. Public helper: `VmImageCache.prune(Duration olderThan)`, which deletes entries whose last-modified time is older than the given duration. Entries are touched on every use.
+- **Touch:** every use sets the entry's last-modified time to now.
+- **Eviction:** none automatic. `VmImageCache.prune(Duration olderThan)` deletes every entry whose last-modified time is older than `olderThan`, its side files, and its `index.json` rows.
 
 #### 9.3.2 Why every source goes through the cache
 
@@ -761,23 +816,24 @@ public sealed interface VmImage {
 #### 9.3.3 containerDisk extraction (`ContainerDiskExtractor`; uses the Testcontainers `DockerClient`, no CLI)
 
 1. **Pull through the engine** (always, so tag moves are picked up; the engine skips unchanged layers):
-   - **Without explicit credentials:** `new RemoteDockerImage(image).withImagePullPolicy(PullPolicy.alwaysPull()).get()`. The explicit policy matters: Testcontainers' default policy pulls only when the image is missing locally [D], which would hide a moved tag. The engine authenticates with credentials from Testcontainers' `RegistryAuthLocator` (Docker `config.json` and credential helpers) or, on Podman, its own `auth.json` from `podman login` **[V]**.
-   - **With `OciOptions.credentials(...)`:** `client.pullImageCmd(ref).withAuthConfig(new AuthConfig().withRegistryAddress(host).withUsername(u).withPassword(p)).exec(new PullImageResultCallback()).awaitCompletion()`. These docker-java APIs are [D]; their use here is not yet exercised (T27c).
-   - **Local fallback:** if the pull fails for any reason and the image exists locally (`inspectImageCmd` succeeds), log a WARN (`using local image <ref>; pull failed: <reason>`) and continue with the local image. This covers locally built, never-pushed images (for example the reference guest before `pushImages`) and offline work. It does not mask T27 (a), because that test removes the image first.
+   - **Without explicit credentials:** `String name = new RemoteDockerImage(image).withImagePullPolicy(PullPolicy.alwaysPull()).get()`. The explicit policy matters: Testcontainers' default policy pulls only when the image is missing locally [D], which would hide a moved tag. The engine authenticates with credentials from Testcontainers' `RegistryAuthLocator` (Docker `config.json` and credential helpers) or, on Podman, its own `auth.json` from `podman login` **[V]**.
+   - **With `OciOptions.credentials(...)`:** `client.pullImageCmd(image.asCanonicalNameString()).withAuthConfig(new AuthConfig().withRegistryAddress(image.getRegistry()).withUsername(u).withPassword(p)).exec(new PullImageResultCallback()).awaitCompletion()`, then `name = image.asCanonicalNameString()`. These docker-java APIs are [D]; their use here is not yet exercised (T27c).
+   - **Local fallback (REQ-OCI-07):** if the pull fails for any reason and `client.inspectImageCmd(name).exec()` succeeds, emit one WARN `using local image <ref>; pull failed: <reason>` through `Warnings` and continue with the local image. This covers locally built, never-pushed images (the reference guest before `pushImages`) and offline work. It does not mask T27 (a), because that test removes the image first.
    - **Pull errors** (no local image): if the failure is HTTP 401/403 from the engine, or its message contains `unauthorized`, `authentication required` or `denied` (case-insensitive), throw `ImageAuthException("pull of <ref> was rejected (credentials missing or rejected)", cause)`. Any other failure → `VmtcException("pull of <ref> failed", cause)`. The no-credentials case returned `401 unauthorized` **[V]** (run 12); the exact exception class docker-java raises for it is not recorded, so match on status and message, not on class.
-   - Then `imageId = client.inspectImageCmd(ref).exec().getId()`.
-2. `id = createContainerCmd(image).withCmd("/none").exec().getId()` creates without starting **[V]**.
-3. `copyArchiveFromContainerCmd(id, "/disk/")` → tar stream.
+   - Then `imageId = client.inspectImageCmd(name).exec().getId()`.
+2. `id = client.createContainerCmd(name).withCmd("/none").exec().getId()` creates without starting **[V]**.
+3. `client.copyArchiveFromContainerCmd(id, "/disk/").exec()` → tar stream.
+   - A `NotFoundException` (the image has no `/disk/` directory) → `IllegalArgumentException("containerDisk must contain exactly one file under /disk/")`.
    - Skip directory entries.
-   - Require **exactly one** regular-file entry, else throw `IllegalArgumentException("containerDisk must contain exactly one file under /disk/")`.
+   - Require **exactly one** regular-file entry, else throw the same `IllegalArgumentException`.
    - Stream that entry into the cache tmp file; its base name is `fileName`.
    - Status: directory copy **[V]** on Docker 29.8, Podman 4.9.3 and 5.7.0 (run 5).
-4. `removeContainerCmd(id).withForce(true)` in `finally`.
+4. `client.removeContainerCmd(id).withForce(true).exec()` in `finally`.
 
 #### 9.3.4 `baked()`
 
 - The user builds `FROM <runner>` plus `COPY disk.qcow2 /vm/base/disk.img`.
-- No bind. Intended for remote engines and podman-machine setups.
+- No cache, no bind. Intended for remote engines and podman-machine setups. If the file is missing, the entrypoint exits 2 and `start()` throws `VmtcException` containing `no base disk` (T29).
 
 #### 9.3.5 HTTP(S) download (`ImageDownloader`) [V]
 
@@ -787,36 +843,37 @@ public sealed interface VmImage {
 UrlOptions.builder()
     .sha256(String hex)                       // optional; when absent: WARN once per URL "no integrity check"
     .credentials(HttpCredentials.basic(user, Secret pw) | .bearer(Secret token) | .header(name, Secret value))
-    .compression(Compression.AUTO)            // AUTO (by URL path suffix .gz/.xz/.zst) | NONE | GZIP | XZ | ZSTD
-    .timeout(Duration)                        // per request; default 30 min (large images)
+    .compression(Compression.AUTO)            // AUTO (by the FINAL URL's path suffix .gz/.xz/.zst) | NONE | GZIP | XZ | ZSTD
+    .timeout(Duration)                        // headers wait AND per-read idle limit; default 30 min
     .build();
+UrlOptions.defaults()                         // = builder().build()
 ```
 
-`Secret` wraps a `char[]` supplier. `toString()` prints `***`. `Secret.fromEnv("NAME")` reads an environment variable lazily.
+`Secret` wraps a `Supplier<char[]>`. `toString()` prints `***`. `Secret.fromEnv("NAME")` reads the environment variable lazily on first `value()`; a missing variable throws `IllegalStateException("environment variable NAME is not set")` then, not at construction.
 
 **Algorithm:**
 
 1. Use one JDK `HttpClient` with `followRedirects(Redirect.NEVER)`. It honours the JVM proxy properties.
-2. Request the URL.
+2. Request the URL with `HttpRequest.timeout(options.timeout)` (bounds the wait for headers).
    - Send the credential header **only** while the request's `scheme://authority` equals the original URL's.
-   - Follow 3xx `Location` manually, resolved relative to the current URL, up to 5 hops; then fail with `IOException("too many redirects")`.
+   - Follow 3xx `Location` manually, resolved relative to the current URL, up to 5 hops; a 6th redirect fails with `ImageDownloadException("too many redirects for <url>")`.
 3. Handle the response:
-   - `401` / `403` → `ImageAuthException("HTTP <code> for <url> (credentials missing or rejected)")`. The URL is printed without user-info or query.
-   - Any other status ≠ 200 → `IOException`.
-4. Stream through a `DigestInputStream` (SHA-256 over the **downloaded** bytes, i.e. what publishers checksum), then through the decompressor, into `<key>.tmp-…`.
+   - `401` / `403` → `ImageAuthException("HTTP <code> for <url> (credentials missing or rejected)")`. Every URL in a message is printed without user-info or query string.
+   - Any other status ≠ 200 (and ≠ 304 during revalidation) → `ImageDownloadException("HTTP <code> for <url>")`.
+4. Stream through a `DigestInputStream` (SHA-256 over the **downloaded** bytes, i.e. what publishers checksum), then through the decompressor chosen by `compression` (for `AUTO`, by the **final** URL's path suffix), into `<key>.tmp-…`. A watchdog closes the body stream if no bytes arrive for `options.timeout`; the blocked read then fails with an `IOException` **[U]**.
 5. If a SHA-256 was given and differs: delete the tmp file and throw `ImageChecksumException(expected, actual)`.
 6. `ATOMIC_MOVE` to `<key>.img`.
-7. **Retries:** up to 3 attempts with backoff of 2 s and 8 s, for I/O errors and 5xx. Never retry 401/403/404 or a checksum mismatch.
-8. **Revalidation** (no checksum given): on a cache hit, send `If-None-Match` / `If-Modified-Since`.
+7. **Retries:** up to 3 attempts in total, with backoff of 2 s and 8 s (injectable `Backoff`), for `IOException`s and 5xx. Never retry 401/403/404 or a checksum mismatch. After the last attempt, `IOException`s surface as `ImageDownloadException(message, cause)` — the library never throws checked exceptions (REQ-ERR-01).
+8. **Revalidation** (no checksum given) on a cache hit: send `If-None-Match` / `If-Modified-Since` from `<key>.meta.json`, **one attempt, no retries**.
    - `304` → use the cache.
-   - `200` → replace the entry.
-   - Network failure → use the cache with a WARN.
+   - `200` → replace the entry (steps 4–6).
+   - `IOException` or 5xx → use the cache and WARN once.
 
 #### 9.3.6 `oci://` sources (R13) [V]
 
-- **Parsing:** `oci://<registry>/<repo>[:tag|@sha256:<digest>]` → strip `oci://` → `DockerImageName.parse(...)`. A missing tag means `latest`. A string not starting with `oci://` (including `oras://`) → `IllegalArgumentException("expected oci://<registry>/<repo>[:tag|@sha256:…]")`.
+- **Parsing:** the string must start with `oci://`, else `IllegalArgumentException("expected oci://<registry>/<repo>[:tag|@sha256:…]")` (this rejects `oras://` and bare names). Strip `oci://` → `DockerImageName.parse(...)`. A missing tag means `latest`.
 - **Pull:** through the engine, per §9.3.3 step 1. Explicit credentials come from `OciOptions.credentials(RegistryCredentials.basic(user, Secret pw))`; otherwise the engine's own credential stores are used.
-- **Extraction:** `/disk/` is extracted per §9.3.3 steps 2–4 into the cache, keyed by image ID. A tag that moves yields a new image ID and therefore a new cache entry.
+- **Extraction:** `/disk/` is extracted per §9.3.3 steps 2–4 into the cache, keyed by image ID. A tag that moves yields a new image ID and therefore a new cache entry; an unchanged tag reuses the entry (REQ-DISK-12).
 - **No JVM-side registry client:** neither the ORAS SDK nor our own (§15 L7).
 - **Publishing format:** §10.4.
 
@@ -826,13 +883,13 @@ UrlOptions.builder()
 - Newline-delimited JSON over TCP.
 - Resync with `guest-sync-delimited` on every (re)connect [V].
 - One request in flight, guarded by a `ReentrantLock`.
-- On I/O error: reconnect once, then fail.
+- On I/O error: reconnect once (resync per §9.2 step 10) and re-issue the interrupted request; a `guest-exec-status` poll simply continues with the same `pid`. A second failure propagates as `VmtcException`.
 
 **Exec:**
-1. `guest-exec {path, arg, env?, input-data? (base64), capture-output: true}` → `pid`.
+1. `guest-exec {path: argv[0], arg: argv[1..], env: ["K=V", …] (omitted when empty), input-data: base64(stdin) (omitted when empty), capture-output: true}` → `pid`.
 2. Poll `guest-exec-status {pid}`, starting at 50 ms and backing off ×1.5 to a 500 ms cap, until `exited` or the timeout.
 3. On timeout: best-effort `guest-exec {path:"/bin/kill", arg:["-9", pid]}`, then throw `GuestExecTimeoutException`.
-4. Return `GuestExecResult(int exitCode, Integer signal, String stdout, String stderr, boolean stdoutTruncated, boolean stderrTruncated)`, decoding base64 as UTF-8 with replacement.
+4. Return `GuestExecResult(int exitCode, Integer signal, String stdout, String stderr, boolean stdoutTruncated, boolean stderrTruncated)`, decoding base64 as UTF-8 with U+FFFD replacement. QGA omits `exitcode` when the process died from a signal: then `signal` is set and `exitCode` is **-1**.
 
 **Notes:**
 - QGA caps captured output at 16 MiB per stream [D]. The truncated flags come from `out-truncated` / `err-truncated`.
@@ -892,10 +949,14 @@ public interface VmScreen {
   BufferedImage screenshot();
   void screenshot(Path hostPng);
   ScreenRecording startRecording(Path hostWebm);                          // RecordingOptions.defaults()
-  ScreenRecording startRecording(Path hostWebm, RecordingOptions opts);   // fps 1..30 (default 10), bitrate bps (default 1_000_000)
+  ScreenRecording startRecording(Path hostWebm, RecordingOptions opts);
   void forceModeset();
 }
-public record VncEndpoint(String host, int port, Optional<String> password) { public String uri() { return "vnc://" + host + ":" + port; } }
+public record VncEndpoint(String host, int port) { public String uri() { return "vnc://" + host + ":" + port; } }
+public record RecordingOptions(int fps, int bitrateBps) {                 // fps 1..30, bitrate > 0
+  public static RecordingOptions defaults() { return new RecordingOptions(10, 1_000_000); }
+  public static RecordingOptions fps(int fps) { return new RecordingOptions(fps, 1_000_000); }
+}
 public interface KeyboardInput { void type(String text); void press(String... qcodes); }
 ```
 
@@ -907,39 +968,46 @@ public interface KeyboardInput { void type(String text); void press(String... qc
   2. `copyFileFromContainer` → `ImageIO.read`.
   3. Delete the container file with `execInContainer("rm","-f",…)`.
 - **`forceModeset()`:**
-  1. Load classpath resource `<${BASE_PACKAGE} as path>/display/vmtc-fb-activate.py` (Appendix A.4).
-  2. `copyToVm(bytes, "/tmp/vmtc-fb-activate.py")`.
-  3. `exec("/usr/bin/python3","/tmp/vmtc-fb-activate.py","/dev/fb"+index)`. A non-zero exit throws `VmtcException`.
+  1. For index 0 it is a no-op (returns without any guest call).
+  2. Load classpath resource `<${BASE_PACKAGE} as path>/display/vmtc-fb-activate.py` (Appendix A.4).
+  3. `copyToVm(bytes, "/tmp/vmtc-fb-activate.py")`.
+  4. `exec("/usr/bin/python3","/tmp/vmtc-fb-activate.py","/dev/fb"+index)`. A non-zero exit throws `VmtcException` with the script's output.
 
-  For index 0 it is a no-op. Guest `python3` is present in Rocky GenericCloud [V].
+  Guest `python3` is present in Rocky GenericCloud [V].
 - **`type(text)`:**
-  - One QMP `send-key {keys:[{type:"qcode",data:…}…]}` per character, with **30 ms** between characters [V].
+  - **Validate first:** map every character per Appendix A.3; any unmapped character → `IllegalArgumentException("unsupported character U+XXXX")` **before** any key is sent.
+  - Then one QMP `send-key {keys:[{type:"qcode",data:…}…]}` per character, with **30 ms** between characters [V].
   - Mapping per Appendix A.3: letters (shift for upper case), digits, US punctuation; `\n` → `ret`, space → `spc`.
-  - Any other character → `IllegalArgumentException`.
 - **`press(qcodes…)`:** a single `send-key` with all qcodes held together, for example `press("ctrl","alt","f2")`.
+- **Making a screen change (tests):** output must go to the VGA console, e.g. `execShell("for i in $(seq 12); do echo tick$i > /dev/tty1; sleep 1; done >/dev/null 2>&1 &")`; writes to `/dev/ttyS0` do not change the screen.
 
 ### 9.8 Screen recording (R8)
 
+- **Media only:** if `variant()` is not `MEDIA`, `startRecording` throws `UnsupportedOperationException("screen recording requires the media runner image")` (§6.1).
 - **Naming:** `name` = `screen<i>-<uuid8>`.
 - **Start:**
-  - `execInContainer(ExecConfig.builder().command(new String[]{"/usr/local/bin/vmtc-rec","start",name,i,fps,bitrate}).envVars(passwordOrEmptyMap).build())` [D].
-  - Never put the password on the command line.
-  - Expect `VMTC_REC_STARTED`.
+  - `execInContainer("/usr/local/bin/vmtc-rec","start",name,i,fps,bitrate)`.
+  - Expect `VMTC_REC_STARTED <pid>` in stdout; anything else → `RecordingException("recorder did not start: " + stdout + stderr)`.
 - **`ScreenRecording`** (`AutoCloseable`):
   - `close()` runs `vmtc-rec stop <name> 10`.
-    - `VMTC_REC_OK` → `copyFileFromContainer("/vm/out/<name>.webm", hostWebm)`.
-    - `VMTC_REC_INVALID` → `RecordingException` with the log tail.
-    - `VMTC_REC_KILLED` followed by `VMTC_REC_OK` → success plus a WARN.
-  - Accessors: `Path file()`, `Duration duration()`, `int width()`, `int height()`, parsed from `VMTC_REC_OK`.
+    - `VMTC_REC_OK duration=<s> width=<w> height=<h>` → `copyFileFromContainer("/vm/out/<name>.webm", hostWebm)`; parse the three values (`duration` is decimal seconds).
+    - `VMTC_REC_INVALID` → `RecordingException` with the whole stop output (it includes the log tail).
+    - `VMTC_REC_KILLED` followed by `VMTC_REC_OK` → success plus a WARN through `Warnings`.
+    - `close()` is idempotent; a second call returns immediately.
+  - Accessors: `Path file()`, `Duration duration()`, `int width()`, `int height()`, valid after `close()`.
 - **Concurrency:** any number of recordings, including two on one screen (separate VNC clients under force-shared [V]).
-- **Slim image:** throws per §6.1.
+- The container keeps a registry of open recordings for `stop()` (§9.2) and the JUnit extension (§9.13).
 
 ### 9.9 Audio recording (R7, separate WAV)
 
-1. `startAudioRecording(path)`: HMP via QMP `human-monitor-command`: `wavcapture /vm/out/audio-<uuid8>.wav snd0 44100 16 2`.
-2. HMP `info capture`: find the line ending in that path and parse `[<n>]` [V]. If parsing fails and exactly one capture line exists, use its index.
-3. `close()`: `stopcapture <n>`, copy the file out, and validate it (RIFF/WAVE header, `data` size > 0).
-4. Only one capture at a time.
+```java
+public interface AudioRecording extends AutoCloseable { Path file(); @Override void close(); }
+```
+
+1. `startAudioRecording(path)`: HMP via QMP `human-monitor-command`: `wavcapture /vm/out/audio-<uuid8>.wav snd0`. The spike used QEMU's defaults (44100 Hz, 16 bit, 2 channels) **[V]**; do not pass explicit parameters.
+2. HMP `info capture`: find the line ending in that path and parse `[<n>]` [V] (format `[<n>]: Capturing audio(44100,16,2) to <path>: <bytes> bytes`). If parsing fails and exactly one capture line exists, use its index.
+3. `close()`: `stopcapture <n>`, copy the file out to `path`, and validate it (RIFF/WAVE header, `data` size > 0) else `RecordingException`. Idempotent.
+4. Only one capture at a time: a second `startAudioRecording` while one is open → `IllegalStateException`; after `close()` a new one is allowed.
 
 The guest mixer must be unmuted (G6); the Javadoc says an all-zero capture means it is not.
 
@@ -955,7 +1023,7 @@ public final class Devices {
   public static DeviceSpec cpu();                                          // KVM only; TCG → UnsupportedOperationException at hotplug()
   public static DeviceSpec memory(int sizeMiB);
 }
-public interface HotplugHandle extends AutoCloseable { String id(); void unplug(Duration timeout); @Override void close(); }
+public interface HotplugHandle extends AutoCloseable { String id(); void unplug(); void unplug(Duration timeout); @Override void close(); }
 public interface CdromDrive { void insert(Path hostIso); void eject(); }
 ```
 
@@ -980,34 +1048,38 @@ All sequences are **[V]** (CI `hotplug_*`, `cdrom_media_change`):
 | memory | `object-add {qom-type:"memory-backend-ram", id:"mem-<id>", size}` → `device_add {driver:"pc-dimm", id, memdev}` | `UnsupportedOperationException`; `close()` is a no-op |
 | `cdrom().insert` | copy to `/vm/run/<id>.iso` → `blockdev-change-medium {id:"cd0", filename, format:"raw", read-only-mode:"read-only"}` | `cdrom().eject()` → `eject {id:"cd0", force:true}` |
 
-- **`close()`:** calls `unplug(defaultTimeout)` where supported.
+- **`unplug()`** = `unplug(default 30 s, scaled)`. **`close()`:** calls `unplug()` for USB, virtio-disk and NIC handles; for cpu and memory handles `close()` is a no-op and `unplug()` throws `UnsupportedOperationException`. `close()` is idempotent.
+- **Read-only disks:** `readOnly=true` → `blockdev-add … read-only: true`; the guest cannot write (`dd` fails) and the host image is untouched (REQ-HOT-10).
 - **Default unplug timeout:** 30 s (×TCG factor). On timeout, throw `HotplugTimeoutException("guest did not release <id>")`.
 - **Measured [V]:** guest visibility ≤ 3.2 s (USB, TCG) and ≤ 0.5 s (PCIe); unplug ≤ 0.4 s.
 
-### 9.11 Errors
+### 9.11 Errors and warnings
 
-- Every exception is unchecked and extends `VmtcException`.
+- Every exception the library throws on purpose is unchecked and extends `VmtcException`; JDK `IllegalArgumentException`/`IllegalStateException`/`UnsupportedOperationException` are used for caller mistakes as documented. Checked exceptions from the JDK or docker-java are wrapped in the matching `VmtcException` subclass with the original as cause. Never `throw new RuntimeException(...)` or `UncheckedIOException` (REQ-ERR-01).
 - `QmpException` carries the QMP `class` and `desc`.
+- `start()` unwraps `ContainerLaunchException` (§9.2, rule e).
+- **`Warnings`** (`${BASE_PACKAGE}.Warnings`, exported): every WARN the library emits goes through `Warnings.warn(Logger log, String message)`, which logs at WARN **and** notifies registered listeners. `AutoCloseable Warnings.listen(Consumer<String>)` registers a listener (tests capture warnings; `VmIT` attaches them as `warnings.txt`). "Once per JVM" warnings are guarded by a `ConcurrentHashMap.newKeySet()` of message keys inside `Warnings.warnOnce(Logger, String key, String message)`.
 
 ### 9.12 Cleanup without Ryuk
 
 - **Ryuk:** on rootless Podman, Ryuk must be disabled (`TESTCONTAINERS_RYUK_DISABLED=true`) [V].
-- **`VmtcCleanup.removeOrphans()`:**
+- **`int VmtcCleanup.removeOrphans()`:**
+  - Returns 0 immediately when the `cleanup` override is `false`.
   - Lists containers in **any** state (`listContainersCmd().withShowAll(true)`) labelled `${LABEL_PREFIX}.managed=true` whose `${LABEL_PREFIX}.session` differs from the current one **and** whose `${LABEL_PREFIX}.created` is more than 1 h old.
-  - Force-removes them.
-  - Runs once per JVM on the first `start()`, unless the `cleanup` override is `false`.
+  - Force-removes them and returns the count.
+- `QemuVmContainer.start()` calls it exactly once per JVM, before the first container is created (REQ-CLN-02). The call goes through a package-private `static` seam so U17 can substitute it.
 
 ### 9.13 `${ART_JUNIT}` (optional)
 
 - **`@VmTest`** (on a class) registers `VmArtifactsExtension`.
-- **On test failure** (`TestWatcher.testFailed`), for every **running** `QemuVmContainer` found in the test instance's fields and the class's static fields (reflection, including superclasses):
-  1. Stop each open `ScreenRecording` and `AudioRecording`, which finalizes and copies them.
-  2. Save the serial log.
-  3. Take one screenshot per screen.
+- The extension implements **`AfterTestExecutionCallback`** and checks `context.getExecutionException().isPresent()`. This callback runs **before** `@AfterEach` methods and before Testcontainers' own extension stops containers; `TestWatcher.testFailed` runs after them, when the container is already gone [D, JUnit 5 extension lifecycle], so it is **not** used for artifact capture.
+- On failure, for every **running** `QemuVmContainer` found in the test instance's fields and the class's static fields (reflection, including superclasses):
+  1. Close each open `ScreenRecording` and `AudioRecording`, which finalizes them at their own host paths.
+  2. `saveSerialLog(dir.resolve("serial.log"))`.
+  3. One screenshot per screen → `dir.resolve("screen<i>.png")`.
 
-  Output goes to `build/vm-artifacts/<class>/<method>/`.
-- **Ordering:** artifacts are written in `testFailed`, which runs before `@AfterEach` and container shutdown.
-- To support that, `QemuVmContainer` keeps a registry of its open recordings.
+  `dir` = `build/vm-artifacts/<class simple name>/<method name>/` (created on demand).
+- To support that, `QemuVmContainer` keeps a registry of its open recordings (§9.8, §9.9).
 
 ---
 
@@ -1027,13 +1099,13 @@ All sequences are **[V]** (CI `hotplug_*`, `cdrom_media_change`):
 
 ### 10.2 Cloud-init seed (`CloudInitSeed`)
 
-**`CloudInitSeed.forStockRocky()`** brings a stock Rocky 9 GenericCloud image up to G2–G6. It is the verified `make-seed.sh` content, in this order **[V]**:
+**`CloudInitSeed.forStockRocky()`** brings a stock Rocky 9 GenericCloud image up to G2–G6. Its `userData()` is exactly this text (the spike's `make-seed.sh` emitted the same commands in the same order **[V]**; the spike's own `SPIKE_*` markers and root password are not part of it):
 
 ```yaml
 #cloud-config
 runcmd:
-  - sh -c "dnf -y install alsa-utils > /var/log/seed-dnf.log 2>&1; echo DNF_RC=\$? > /dev/ttyS0; tail -5 /var/log/seed-dnf.log > /dev/ttyS0"
   - update-ca-trust
+  - sh -c "dnf -y install alsa-utils > /var/log/seed-dnf.log 2>&1; echo DNF_RC=\$? > /dev/ttyS0; tail -5 /var/log/seed-dnf.log > /dev/ttyS0"
   - sed -i 's/^FILTER_RPC_ARGS=.*/FILTER_RPC_ARGS=""/' /etc/sysconfig/qemu-ga
   - semanage permissive -a virt_qemu_ga_t
   - systemctl enable qemu-guest-agent
@@ -1043,18 +1115,22 @@ runcmd:
   - echo VMTC_SEED_DONE > /dev/ttyS0
 ```
 
-**Builder API.** `CloudInitSeed.builder()` starts **empty** (no built-ins). `Builder.stockRocky()` adds the built-in lines above, in that order. `forStockRocky()` is `builder().stockRocky().build()`.
+**About `\$?`:** the backslash is **correct and verified** (the file the spike booted contained it **[V]**). The runcmd item is a YAML *plain* scalar, so `\` is literal; cloud-init runs the item through `/bin/sh -c`, whose double quotes turn `\$` into `$`, so the inner `sh -c` sees `$?`. Do not "fix" it.
+
+**`metaData()`** is `instance-id: <uuid>\nlocal-hostname: vm\n`.
+
+**Builder API.** `CloudInitSeed.builder()` starts **empty**. `build()` **always** appends `echo VMTC_SEED_DONE > /dev/ttyS0` as the last runcmd line, whatever else was added, because `start()` waits for it (§9.2 step 10). `forStockRocky()` is `builder().stockRocky().build()`.
 
 | Method | Effect |
 |--------|--------|
-| `packages(String…)` | Emitted as the **first** runcmd line, in exactly the `sh -c "dnf …"` form above. Needs guest network. `DNF_RC≠0` is logged as WARN, not failure: in one run dnf reported failure yet the package was installed [V] |
-| `runcmd(String…)` | Appended after the built-ins (if `stockRocky()` was called), in call order |
-| `writeFile(path, content)` | → `write_files` |
+| `stockRocky()` | Adds the built-in lines above, in that order (without the final echo, which `build()` adds) |
+| `packages(String…)` | Merged into **one** `sh -c "dnf -y install <pkgs> …"` line of exactly the form above, placed immediately after `update-ca-trust` (which is added if absent). With `stockRocky()`, `alsa-utils` is part of the same line. Needs guest network. `DNF_RC≠0` is logged as WARN, not failure: in one run dnf reported failure yet the package was installed [V] |
+| `runcmd(String…)` | Appended after the built-ins and the dnf line, in call order |
+| `writeFile(path, content)` | → a `write_files` entry (`path`, `content` as a literal block, `permissions: '0644'`) |
 | `rootPassword(pw)` | → `chpasswd: {expire: false, users: [{name: root, password: pw, type: text}]}` |
-| `trustCaFile(Path pem)` | → `write_files` to `/etc/pki/ca-trust/source/anchors/` (for proxied networks) |
+| `trustCaFile(Path pem)` | → `write_files` entry at `/etc/pki/ca-trust/source/anchors/vmtc-<n>.crt` (n = 1, 2, … per call) and ensures `update-ca-trust` is in runcmd before any dnf line |
 
-- The `VMTC_SEED_DONE` line is always last.
-- `meta-data` is `instance-id: <uuid>` and `local-hostname: vm`.
+Section order in the YAML: `#cloud-config`, `chpasswd` (if any), `write_files` (if any), `runcmd`.
 
 **Seed timings [V]:** KVM 45–102 s; TCG 323–481 s on CI and 569–654 s in the sandbox. Tests should therefore use the pre-customized reference guest (§10.3).
 
@@ -1094,11 +1170,11 @@ The spike ran the boot through `start-vm.sh`, with the seed ISO built at `/vm/se
 2. **Customization boot.** The guest powers itself off, QEMU exits, and so does the container:
 
    ```
-   timeout 1800 <engine> run --rm [--device /dev/kvm] -e VM_ACCEL=<accel> \
+   timeout 1800 <engine> run --rm [--device /dev/kvm] -e VM_ACCEL=auto \
      -v <base>:/vm/base/disk.img:ro[,z] -v <workdir>/run:/vm/run[:z] -v <workdir>/out:/vm/out[:z] -v <workdir>/seed:/vm/seed:ro[,z] <runner-slim-image>
    ```
 
-   Then require `VMTC_CUSTOMIZE_DONE` in `<workdir>/out/serial.log` (the `/vm/out` mount keeps the log after the container exits; the spike copied it out the same way **[V]**). Print its `DNF_RC=` line. The production entrypoint builds the seed ISO from `/vm/seed`.
+   Then require `VMTC_CUSTOMIZE_DONE` in `<workdir>/out/serial.log` (the `/vm/out` mount keeps the log after the container exits; the spike copied it out the same way **[V]**). Print its `DNF_RC=` line. `VM_ACCEL=auto` (not `kvm`) because on a `0660 root:kvm` host the CLI container may not be able to open the device even when Gradle's user can; the script reads the `VMTC_ACCEL` line from the container log and prints it, and the `<kvm|tcg>` argument only decides whether `--device /dev/kvm` is passed. The production entrypoint builds the seed ISO from `/vm/seed`.
 3. **Flatten.** The overlay's backing path is `/vm/base/disk.img`, so the same mounts are used:
 
    ```
@@ -1148,29 +1224,29 @@ ADD --chown=107:107 <name>.qcow2 /disk/<name>.qcow2      # exactly ONE regular f
 
 ### 11.1 Conventions
 
-- Java toolchain `${JAVA_RELEASE}`. javac `-Xlint:all,-processing -Werror`.
+- Java toolchain `${JAVA_RELEASE}`. javac `-Xlint:all,-processing,-requires-automatic,-requires-transitive-automatic,-this-escape -Werror` for every module (the three exclusions are needed because Testcontainers/docker-java/zstd-jni are automatic modules and builder methods are called from constructors; every exception has a `serialVersionUID`, so `serial` stays on).
 - Formatting: adopt the target repo's formatter, if it has one.
-- `:lib` unit tests need no engine.
-- `:it` holds the integration tests, run by the `integrationTest` task:
-  - `dependsOn :images:verifyRunnerImages, :images:buildGuestDisk`;
-  - JUnit tags `kvm`, `tcg`, `any`;
-  - forwards `-D${SYSPROP_PREFIX}.kvm` from the Gradle command line to the test JVM (`systemProperty "${syspropPrefix}.kvm", findProperty(...)`);
-  - passes the guest qcow2 path to the test JVM as system property `${SYSPROP_PREFIX}.it.guestQcow2` (used by `TestImages.guest()` until M3);
-  - excludes `OciAuthIT`, which only the `ociAuthTest` task runs: four `Test` tasks `ociAuthTestA`..`ociAuthTestD`, each in its own JVM with `${SYSPROP_PREFIX}.it.ociScenario=a`..`d`, run in that order (`mustRunAfter`), aggregated by `ociAuthTest`.
-- **Root tasks:**
-  - `checkRequirementTraceability`: REQUIREMENTS.md §3. Input file `docs/vm-testcontainer/REQUIREMENTS.md`; inputs: all `src/test*/java` and `src/*Test/java` trees. Unknown or Retired tags always fail. Missing tests fail only when `gradle.properties` → `traceabilityRequireFullCoverage=true`; until M6 it is `false` and missing tests are only listed in the report.
-  - `checkParameterHygiene`: the §12.3 grep, as a Gradle task so it runs locally too.
+- Every `Test` task: `useJUnitPlatform()`, `testRuntimeOnly 'org.junit.platform:junit-platform-launcher'`, Allure results per §11.4.
+- `:lib` and `:junit5` unit tests need no engine.
+- `:it` (sources in `it/src/test/java`) holds the integration tests. Its `Test` tasks all set `failOnNoDiscoveredTests = false` (Gradle 9 defaults it to `true` [D]) and `dependsOn ':images:verifyRunnerImages', ':images:buildGuestDisk'`:
+  - `integrationTest`: everything except `KvmCompatIT`, `OciAuthIT` and classes tagged `testkit-only`. **Tag mapping:** `-P<syspropPrefix>.kvm=REQUIRE` → `excludeTags 'tcg'`; `DISABLE` → `excludeTags 'kvm'`; `PREFER` or absent → no exclusion. Untagged tests always run.
+  - `compatTest`: `KvmCompatIT` only (T35).
+  - `ociAuthTestA`..`ociAuthTestD`: `OciAuthIT` only, one JVM each with `systemProperty '<syspropPrefix>.it.ociScenario', 'a'..'d'`, chained with `mustRunAfter`; `ociAuthTest` aggregates them.
+  - All of them forward the mode: `systemProperty "<syspropPrefix>.kvm", providers.gradleProperty("<syspropPrefix>.kvm").getOrElse("PREFER")` — the CI passes it as **`-P`**, not `-D` (`findProperty`/`gradleProperty` read project properties only).
+  - They pass `systemProperty "<syspropPrefix>.it.guestQcow2", file("../images/build/guest/work/run/rocky9-vmtc.qcow2").absolutePath` and `"<syspropPrefix>.it.baseQcow2"` = `images/build/guest/base.qcow2` (served by in-JVM HTTP servers in T19/T25, so CI never downloads the 1 GB stock image twice).
+- `TestImages.guest()` (in `:it`) returns `VmImage.fromPath(Path.of(System.getProperty("<syspropPrefix>.it.guestQcow2")))` until M3 and `VmImage.referenceGuest()` from M3 on.
+- `VmIT` (base class in `:it`): `@BeforeAll` warm-up (resolves `TestImages.guest()` once so the cache is populated before timing tests, REQ-LIFE-02); `register(container)`; `@AfterEach` attaches the standard evidence (REQUIREMENTS.md §3.3) and stops registered containers.
 
 ### 11.2 `:images` tasks (all `Exec` with declared inputs/outputs; engine from `-PcontainerEngine`, default `podman`)
 
 | Task | Command |
 |------|---------|
-| `buildRunnerSlim` | `<engine> build -f images/runner/Containerfile --build-arg UBI_IMAGE=<ubiImage> --build-arg VARIANT=slim --build-arg VERSION=<version> --build-arg LABEL_PREFIX=<labelPrefix> --build-arg IMAGE_TITLE=<imageRunnerName> -t <imageRegistry>/<imageRunnerName>:<version>-<imageTagSuffix> images/runner` |
+| `buildRunnerSlim` | `<engine> build -f images/runner/Containerfile --build-arg UBI_IMAGE=<ubiImage> --build-arg VARIANT=slim --build-arg VERSION=<version> --build-arg LABEL_PREFIX=<labelPrefix> --build-arg IMAGE_TITLE=<imageRunnerName> -t <imageRegistry>/<imageRunnerName>:<version>-<imageTagSuffix> images/runner`; with `-PnoCache=true` add `--no-cache --pull` (used by the weekly CI run, REQ-BLD-05) |
 | `buildRunnerMedia` | same with `VARIANT=media`, tag suffix `-media` |
 | `verifyRunnerImages` | §6.4 checks; `dependsOn` both builds |
-| `downloadGuestBase` | download `baseUrl` to `build/guest/base.qcow2`, verify `baseSha256` |
-| `buildGuestDisk` | `images/guest/customize.sh <engine> <slim tag> build/guest/base.qcow2 build/guest/work <imageRegistry>/<imageGuestName>:<version> <kvm if /dev/kvm usable else tcg>`; `dependsOn buildRunnerSlim, downloadGuestBase` |
-| `pushImages` | `<engine> push` the three tags; only with `-PpushImages=true` |
+| `downloadGuestBase` | download `baseUrl` to `images/build/guest/base.qcow2`, verify `baseSha256`; skipped when the file already verifies |
+| `buildGuestDisk` | `images/guest/customize.sh <engine> <slim tag> images/build/guest/base.qcow2 images/build/guest/work <imageRegistry>/<imageGuestName>:<version> <kvm if /dev/kvm usable else tcg>`, then the REQ-GUEST-05 format checks (one layer, empty `Config.Cmd`/`Entrypoint`, one regular file uid/gid 107 under `/disk/`); `dependsOn buildRunnerSlim, downloadGuestBase` |
+| `pushImages` | `<engine> push` the three tags; `onlyIf { project.findProperty('pushImages') == 'true' }` |
 
 ### 11.3 Generated constants (`:lib:generateConstants`)
 
@@ -1191,29 +1267,63 @@ public final class VmtcConstants {
 }
 ```
 
+### 11.4 Allure reporting and `test-support` (D10, D11)
+
+**`test-support` module** (not published; `java-library`):
+
+- Dependencies: `platform("io.qameta.allure:allure-bom:${ALLURE_JAVA_VERSION}")`, `io.qameta.allure:allure-jupiter`, `io.qameta.allure:allure-java-commons`, `org.junit.jupiter:junit-jupiter-api`, `jackson-databind` (all `api` so test modules inherit them).
+- `processResources` copies `../docs/vm-testcontainer/REQUIREMENTS.md` to `vmtc-requirements/REQUIREMENTS.md` (declared input, so edits to the document rebuild the jar).
+- Types in `${BASE_PACKAGE}.testsupport`: `Requirement`, `Requirements`, `RequirementExtension`, `RequirementsCatalog` (parser, REQUIREMENTS.md §3.2), `RequirementsCheck` (`main`, §11.5), `Evidence` (REQUIREMENTS.md §3.3), `AllureEnvironment` (writes `environment.properties`).
+- Resource `allure.properties` is **not** here; each test module has its own (below).
+
+**Every test module** (`:lib`, `:junit5`, `:it`):
+
+- `testImplementation project(':test-support')` (plus `allure-jupiter` transitively; `:it` adds `junit-platform-testkit` for T34).
+- `src/test/resources/allure.properties`: `allure.results.directory=build/allure-results` and `allure.link.requirement.pattern=${REQ_DOC_URL}#{}` (so `Allure.link(id, "requirement", anchor)` resolves).
+- No AspectJ agent: only the Allure runtime API is used (`Allure.addAttachment`, `Allure.step`, labels, links), never `@Step`/`@Attachment`.
+- Attachments go through `Evidence` (test-support), which calls `Allure.addAttachment(name, type, InputStream, extension)`.
+
+**Root task `allureReport`:**
+
+1. A detached configuration `allureCli` with `io.qameta.allure:allure-commandline:${ALLURE_REPORT_VERSION}@zip`; a `Sync` task unzips it to `build/allure-cli/` (contains `allure-${ALLURE_REPORT_VERSION}/bin/allure`) **[V]** (zip layout checked).
+2. `AllureEnvironment` output: `environment.properties` with `engine`, `engine.version` (from env `<envPrefix>IT_ENGINE_VERSION`, set by CI from `podman --version`, else `unknown`), `kvm.mode`, `os`, `java.version`, `git.commit` (env `GITHUB_SHA`), written into `it/build/allure-results` (or the first results dir that exists).
+3. `Exec`: `build/allure-cli/allure-<v>/bin/allure generate --clean --single-file -o build/allure-report <results dirs that exist>`. `--single-file` produces one `index.html` that opens from disk **[V]** (`allure help generate` lists the option).
+4. Never fails the build when a results directory is missing; prints which were included.
+
+### 11.5 Root check tasks
+
+| Task | What it does |
+|------|--------------|
+| `checkParameterHygiene` | The §0 grep rules. Plus these greps on `lib/src/main`: no `ProcessBuilder`, no `Runtime.getRuntime().exec`, no `throw new RuntimeException(`, no `throw new UncheckedIOException(` (REQ-ENG-03, REQ-ERR-01). Plus: `.github/workflows/ci.yml` contains `cron: '0 6 * * 1'` (REQ-BLD-05). Plus: no `@Disabled` in any test source set (REQUIREMENTS.md §3.1) |
+| `checkRequirementTraceability` | `JavaExec` of `RequirementsCheck` (test-support) with the REQUIREMENTS.md path, the test source roots and `traceabilityRequireFullCoverage`; writes `build/reports/requirements/traceability.md` (REQUIREMENTS.md §3.4) |
+| `checkDependencies` | Resolves `:lib` `configurations.api.dependencies` and `implementation.dependencies` (direct declarations) and compares `group:name` sets with the §9.1 table; any difference fails (REQ-BLD-03, REQ-OCI-06) |
+
 ---
 
 ## 12. CI (GitHub Actions)
 
 ### 12.1 Workflow `ci.yml`
 
-- **Triggers:** `push`, `pull_request`, and `schedule: cron '0 6 * * 1'` (weekly rebuild against fresh repos; R1).
+- **Triggers:** `push`, `pull_request`, and `schedule: cron '0 6 * * 1'` (weekly rebuild against fresh repos; the scheduled run passes `-PnoCache=true`; R1).
+- **Common steps:** checkout; `actions/setup-java` (Temurin `${JAVA_RELEASE}`, Gradle cache); `export <envPrefix>IT_ENGINE_VERSION="$(podman --version | awk '{print $3}')"`.
 - **Jobs:**
 
 | Job | Runner(s) | Runs | Timeout |
 |-----|-----------|------|---------|
-| `unit` | ubuntu-24.04 | `./gradlew :lib:test :junit5:test checkRequirementTraceability checkParameterHygiene publishToMavenLocal` | — |
+| `unit` | ubuntu-24.04 | `./gradlew checkParameterHygiene checkDependencies checkRequirementTraceability :lib:test :junit5:test publishToMavenLocal allureReport`; then the REQ-BLD-02 POM assertions | 20 min |
 | `integration` | matrix `{ubuntu-24.04, kvm}`, `{ubuntu-24.04, tcg}`, `{ubuntu-26.04, kvm}` | steps below | 30 min KVM / 90 min TCG |
-| `compat` | matrix ubuntu-24.04, ubuntu-26.04 | the §9.6 matrix as a regression test: for scenarios A, B, C run `it/fixtures/kvm-scenario.sh <S>` then `./gradlew :it:compatTest` (`KvmCompatIT`, PLAN-STEPS.md step 1.25) | 30 min |
-| `oci-auth` | ubuntu-24.04, KVM | KVM udev rule; `it/fixtures/test-registry.sh start`; `./gradlew :it:ociAuthTest -D<syspropPrefix>.kvm=REQUIRE`; `it/fixtures/test-registry.sh stop` (always) | 45 min |
+| `compat` | matrix ubuntu-24.04, ubuntu-26.04 | `./gradlew :images:verifyRunnerImages`; for S in A, B, C: `it/fixtures/kvm-scenario.sh S` then `:it:compatTest` (PLAN-STEPS.md step 1.25); `allureReport` | 30 min |
+| `oci-auth` | ubuntu-24.04, KVM | KVM udev rule; `it/fixtures/test-registry.sh start`; `./gradlew :it:ociAuthTest -P<syspropPrefix>.kvm=REQUIRE`; `test-registry.sh stop` (always); `allureReport` | 45 min |
 
 - **Steps for `integration`:**
-  1. If kvm: udev rule `KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"`, then `udevadm control --reload-rules && udevadm trigger --name-match=kvm` **[V]**.
+  1. If kvm: udev rule `KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"`, then `udevadm control --reload-rules && udevadm trigger --name-match=kvm` **[V]**. The tcg job does **not** apply it (T20 relies on `/dev/kvm` being unusable there).
   2. `podman system service --time=0 unix://$XDG_RUNTIME_DIR/podman/podman.sock &` (the same command form as `run-scenario.sh` [V]).
   3. Export `DOCKER_HOST=unix://$XDG_RUNTIME_DIR/podman/podman.sock` and `TESTCONTAINERS_RYUK_DISABLED=true` [V].
-  4. `actions/cache` for `build/guest/base.qcow2`, keyed by `baseSha256` (the spike cached the base image the same way [V]). The customized guest is rebuilt each run, about 1.5 min on KVM [V].
-  5. `./gradlew integrationTest -D<syspropPrefix>.kvm=<REQUIRE for kvm | DISABLE for tcg>`
-  6. Upload `it/build/vm-artifacts/**` and `it/build/reports/**`.
+  4. `actions/cache` for `images/build/guest/base.qcow2`, keyed by `baseSha256` (the spike cached the base image the same way [V]). The customized guest is rebuilt each run, about 1.5 min on KVM [V].
+  5. `./gradlew :it:integrationTest -P<syspropPrefix>.kvm=<REQUIRE for kvm | DISABLE for tcg>`
+  6. `./gradlew allureReport` with `if: always()`.
+  7. Upload, all `if: always()`: `build/allure-report/` as `allure-report-integration-<os>-<accel>`; `**/build/allure-results/` as `allure-results-…`; `it/build/vm-artifacts/**` and `it/build/reports/**`.
+- Every other job uploads `build/allure-report/` and `**/build/allure-results/` the same way (`allure-report-unit`, `allure-report-compat-<os>`, `allure-report-oci-auth`), plus `build/reports/requirements/traceability.md` from `unit`.
 
 ### 12.2 Expected durations
 
@@ -1223,97 +1333,104 @@ public final class VmtcConstants {
 | Guest disk build | about 1.5 min on KVM (40 s boot + 48 s flatten + packaging) [V] |
 | KVM integration suite | about 5 min [U, estimate] |
 | TCG integration suite | about 20 min [U, estimate] |
+| Allure report generation | well under 1 min [U, estimate] |
 
 ### 12.3 Parameter hygiene
 
-The CI step from §0 (fixed-string, whole-word grep).
+The `checkParameterHygiene` task (§0 rules, §11.5) runs in the `unit` job.
 
 ---
 
 ## 13. Test plan
 
-**Acceptance criteria are normative in [REQUIREMENTS.md](REQUIREMENTS.md).** This section says how each test is set up and which requirements it verifies. Every test method carries `@Tag("REQ-…")` for each ID in its *Verifies* column (REQUIREMENTS.md §3).
+**Acceptance criteria and evidence are normative in [REQUIREMENTS.md](REQUIREMENTS.md).** This section says how each test is set up and which requirements it verifies (its `@Requirement` annotations). The evidence each test attaches is the *Evidence* cell of every requirement it verifies, plus the standard VM evidence (REQUIREMENTS.md §3.3).
 
 **Rules:**
-- **Guest:** every `:it` test uses `TestImages.guest()` unless stated otherwise. Until M3 it returns `VmImage.fromPath(<images/build/guest/work/run/rocky9-vmtc.qcow2>)`; from M3 on it returns `VmImage.referenceGuest()`.
-- **Jobs:** KVM jobs must pass everything except `tcg`-tagged tests. TCG jobs must pass everything except `kvm`-tagged tests. Untagged = `any`.
+- **Guest:** every `:it` test uses `TestImages.guest()` unless stated otherwise (§11.1).
+- **Jobs:** KVM jobs exclude `tcg`-tagged tests; TCG jobs exclude `kvm`-tagged tests; untagged tests run everywhere.
 - **Runner variant:** tests marked *media* use `new QemuVmContainer(RunnerVariant.MEDIA)`; all others use the slim runner.
 - **Fixtures:** `:it` test fixtures may call the engine CLI (`podman build`, `podman push`, `podman login`) and generate files with `xorriso`/`qemu-img` inside a runner container. The library itself never does (REQ-ENG-03).
+- **System property hygiene:** tests that must control the KVM mode regardless of the CI job (`accelPreferDefault*`, T20, T35) clear `<syspropPrefix>.kvm` for their duration and restore it in `finally`. With D9 this only matters for the *default*; tests calling `withKvm(...)` explicitly are unaffected.
 - **Evidence:** [V] = the behaviour was verified by a spike (§17); [U] = new, not yet run.
 
 ### 13.1 Integration tests (`:it`, real Podman)
 
-| ID | Class.method | Setup / procedure | Verifies | Evidence |
-|----|--------------|-------------------|----------|----------|
-| T1 | `AccelIT.accelKvm` (`kvm`), `accelTcg` (`tcg`), `accelPreferDefault` (`kvm`) | `REQUIRE` / `DISABLE`; QMP `query-kvm`; inspect `HostConfig.Devices`. `accelPreferDefault` clears the `${SYSPROP_PREFIX}.kvm` system property for its duration (restored in `finally`) and sets no `withKvm` | REQ-KVM-01, REQ-KVM-03, REQ-KVM-04 | [V] |
-| T2 | `LifecycleIT.bootToAgent` | Time `start()`; list containers by the session label | REQ-LIFE-01, REQ-LIFE-02, REQ-ENG-01, REQ-PLAT-02 | [V] 10.9–12.1 s KVM / 46.7–66.5 s TCG (seeded) |
-| T3 | `ExecIT.execBasics` | The commands in REQ-EXEC-01..03 | REQ-EXEC-01, REQ-EXEC-02, REQ-EXEC-03 | [V] (01); 02, 03 [U] |
-| T4 | `CopyIT.copyRoundTrip` | Random 5 MB / 50 MB files, deep target path, 0- and 3-byte arrays | REQ-FILE-01, REQ-FILE-02, REQ-FILE-03 | [V] |
-| T5 | `DisplayIT.screenshotEachScreen` | `withScreens(2)`; screenshot both; `screen(1).forceModeset()`; screenshot head 1 again | REQ-DISP-02, REQ-DISP-03 | [V] |
-| T6 | `DisplayIT.vncExposed` | `withScreens(2)`: raw RFB handshake per `vnc()`; then with `withVncPassword("vmtc1234")` read security types; inspect port bindings (4444/4445 and VNC; then again with `withVncBindAddress("0.0.0.0")`) | REQ-VNC-01, REQ-VNC-02, REQ-VNC-03, REQ-LIFE-08 | [V] (handshake, password); bindings [U] |
-| T7 | `DisplayIT.vncPasswordRejectsWrong` (*media*) | With a password, `execInContainer("gst-launch-1.0","-q","rfbsrc","host=127.0.0.1","port=5900","password=wrong","num-buffers=1","!","fakesink")`; check output | REQ-VNC-03 | [V] |
-| T8 | `RecordingIT.recordTwoScreens` (*media*) | `withScreens(2)`, `screen(1).forceModeset()`, record both for 12 s while the guest prints to the console. VP8 = the file contains the Matroska codec ID bytes `V_VP8`; duration and width from `ScreenRecording` accessors | REQ-REC-01, REQ-REC-02 | [V] |
+| ID | Class.method | Setup / procedure | Verifies | Spike evidence |
+|----|--------------|-------------------|----------|----------------|
+| T1 | `AccelIT.accelKvm` (`kvm`), `accelTcg` (`tcg`), `accelPreferDefault` (`kvm`), `accelPreferDefaultTcg` (`tcg`) | `REQUIRE` / `DISABLE` / no `withKvm` with the property cleared; QMP `query-kvm`; inspect `HostConfig.Devices`; `withQemuArgs("-name","vmtc-extra")` + `query-name` in `accelKvm`/`accelTcg` | REQ-KVM-01, REQ-KVM-03, REQ-KVM-04, REQ-CFG-03 | [V] |
+| T2 | `LifecycleIT.bootToAgent` | After the `VmIT` warm-up: time `start()`; `exec("/usr/bin/true")`; `infoCmd`; inspect labels of two containers; `pgrep -c -x qemu-kvm`; `cat /etc/os-release; uname -a` | REQ-LIFE-01, REQ-LIFE-02, REQ-LIFE-10, REQ-ENG-01, REQ-PLAT-02 | [V] 10.9–12.1 s KVM / 46.7–66.5 s TCG (seeded) |
+| T3 | `ExecIT.execBasics` | The commands in REQ-EXEC-01..03 and REQ-EXEC-06 (`kill -9 $$`) | REQ-EXEC-01, REQ-EXEC-02, REQ-EXEC-03, REQ-EXEC-06 | [V] (01); others [U] |
+| T4 | `CopyIT.copyRoundTrip` | Random 5 MB / 50 MB files, `test ! -e /tmp/vmtc` then a deep target path, 0- and 3-byte arrays | REQ-FILE-01, REQ-FILE-02, REQ-FILE-03 | [V] |
+| T5 | `DisplayIT.screenshotEachScreen` | `withScreens(2)`; screenshot both (count non-black pixels on head 0); `screen(0).forceModeset()` (no-op); `screen(1).forceModeset()`; screenshot head 1 again; `screenshot(Path)` | REQ-DISP-02, REQ-DISP-03 | [V] |
+| T6 | `DisplayIT.vncExposed` | `withScreens(4)`: `query-vnc-servers`; raw RFB handshake per `vnc()` (read `RFB 003.008`, send it back, read the security-type list); `query-status`, `guestAgent().ping()`, `vnc()` fields; inspect port bindings and `PublishAllPorts`; then a second container with `withVncBindAddress("0.0.0.0")` | REQ-VNC-01, REQ-VNC-02, REQ-LIFE-08, REQ-LIFE-12 | [V] (handshake, 2 screens); 4 screens and bindings [U] |
+| T7 | — | *Removed (D8: no VNC password). Number kept so older references stay valid.* | — | — |
+| T8 | `RecordingIT.recordTwoScreens` (*media*) | `withScreens(2)`, `screen(1).forceModeset()`, start a `tick` loop on `/dev/tty1` (§9.7), record both for 12 s, measure `close()`; then one 6 s recording with `RecordingOptions.fps(5)` + `gst-discoverer-1.0` in the container; then two simultaneous recordings of screen 0 | REQ-REC-01, REQ-REC-02, REQ-REC-07 | [V] (two screens); options/concurrency [U] |
 | T9 | `RecordingIT.recordingSurvivesExclusiveClient` (*media*) | While recording, a raw RFB client completes the handshake with security type None and sends ClientInit `shared-flag=0`, holds 3 s, disconnects | REQ-VNC-05 | [V] (sandbox) |
 | T10 | `RecordingIT.recordStaticScreen` (*media*) | Record 10 s without guest activity | REQ-REC-03 | [V] (sandbox) |
-| T11 | `AudioIT.audioTone` | Start WAV; guest `/usr/bin/speaker-test -t sine -f 1000 -c 2 -l 1`; close; RMS and dominant frequency (FFT or zero-crossing count) in Java. Then start a second recording while one is open | REQ-AUD-01, REQ-AUD-02 | [V] (01); 02 [U] |
-| T12 | `DisplayIT.keyboardType` | `execShell("echo root:vmtc \| chpasswd")`; `type("root\n")`, wait 3 s; `type("vmtc\n")`, wait 5 s; `type("echo TYPED_OK > /dev/ttyS0\n")`; a serial-log consumer must see `TYPED_OK` within 60 s; `saveSerialLog` contains it | REQ-KEY-01, REQ-LIFE-07 | [V] (run 5) |
-| T13 | `HotplugIT.usbStorage`, `usbHid` | Storage: 16 MiB raw image made with `qemu-img` in a runner container. HID: keyboard, tablet, mouse in turn | REQ-HOT-01, REQ-HOT-02 | storage [V]; HID [U] |
-| T14 | `HotplugIT.virtioDisk`, `nic`, `portsExhausted` | Host image and `newBlankDisk("64M", VIRTIO)`; NIC; `withHotplugPorts(1)` + two virtio disks | REQ-HOT-03, REQ-HOT-04, REQ-HOT-05 | [V] (03, 04); 05 [U] |
-| T15 | `HotplugIT.cdromInsertEject` | ISO with label `VMTCCD` and one file, made with `xorriso` in a runner container | REQ-HOT-06 | [V] |
-| T16 | `HotplugIT.cpuKvm` (`kvm`), `cpuTcg` (`tcg`) | `hotplug(Devices.cpu())` | REQ-HOT-07 | [V] (KVM; TCG failure observed) |
-| T17 | `HotplugIT.memory` | `hotplug(Devices.memory(512))` | REQ-HOT-08 | [V] |
-| T18 | `ImageSourcesIT` | (a) `fromPath` of the guest qcow2; guest writes 1 MiB + `sync`; stop; cache file SHA-256 unchanged; a second container does not see the file. (b) `fromUrl` from an in-JVM `HttpServer` serving that qcow2, with SHA-256. (c) `fromContainerDisk(${IMAGE_GUEST}:${VERSION})`. (d) `baked()` on an image built by the fixture `FROM <slim>` + `COPY disk.qcow2 /vm/base/disk.img`. (e) containerDisks with 0 and 2 files under `/disk/` (fixture-built) → `IllegalArgumentException`. (f) repeat (a)–(c): cache hits per REQ-DISK-06 | REQ-DISK-01..06, REQ-LIFE-03, REQ-GUEST-05 | partly [V] |
-| T19 | `GuestContractIT.guestNotPrepared` | Stock Rocky (`fromUrl(${GUEST_BASE_URL})` + SHA-256), no seed → expect `GuestCommandDisabledException`. Then a seed from `CloudInitSeed.builder()` with only the G3 `sed` line + `systemctl restart qemu-guest-agent` → expect `GuestAgentConfinedException` | REQ-GUEST-01, REQ-GUEST-02 | [V] (behaviour) |
-| T20 | `AccelIT.kvmRequireWithoutKvm` (`tcg`) | `REQUIRE` on the TCG job (the udev rule is not applied there) → exception; message equals the §9.6 text for `!present()` or for `present() && !usable()` | REQ-KVM-02 | [U] |
-| T21 | `CleanupIT.orphanCleanup` | With docker-java, create (do not start) three containers from the slim runner image, labelled: (1) other session, created now − 2 h; (2) other session, created now − 10 min; (3) current session, now − 2 h. Call `VmtcCleanup.removeOrphans()` → only (1) is gone. Repeat with override `cleanup=false` → nothing removed | REQ-CLN-01 | [U] |
-| T22 | `UefiIT.uefiBoot` | `withFirmware(Firmware.UEFI)`; guest `test -d /sys/firmware/efi` exits 0 | REQ-LIFE-09 | [U] |
-| T23 | `GuestContractIT.referenceGuestNoSeed` | `VmImage.referenceGuest()`, no seed; time to ready; `amixer -c 0 get Master`; run the T11 procedure | REQ-GUEST-04, REQ-DISK-11 | [V] (run 5: 11.2 s) |
-| T24 | `RecordingIT.noZombieRecorders` (*media*) | Start + stop a recording; `execInContainer("sh","-c","cat /proc/[0-9]*/status \| grep '^State:'")` has no line containing `Z (zombie)` | REQ-IMG-05 | [V] (tini, sandbox) |
-| T25 | `GuestContractIT.stockRockyWithSeed` | `fromUrl(${GUEST_BASE_URL}, sha256 ${GUEST_BASE_SHA256})` + `CloudInitSeed.forStockRocky()`; then the T3 checks | REQ-GUEST-03, REQ-DISK-02 | [V] |
-| T27 | `OciAuthIT.pull` — run by the `ociAuthTest` task, **one JVM per scenario** (`-D${SYSPROP_PREFIX}.it.ociScenario=a\|b\|c\|d`) | Fixture registry (§12.1 `oci-auth` job) with htpasswd + TLS. Before each scenario: `podman rmi -f <ref>`, remove `~/.docker/config.json` and `$XDG_RUNTIME_DIR/containers/auth.json`. (a) nothing; (b) write `config.json`; (c) nothing stored + `OciOptions.credentials`; (d) `podman login` only | REQ-OCI-02, REQ-OCI-03, REQ-OCI-04 | [V] pull for a, b, d; (c) [U] |
-| T28 | `OciAuthIT.tagMove` — in scenario (b) | Fixture: v1 = the reference guest qcow2; v2 = the same disk re-encoded with `qemu-img convert -c -O qcow2 -o cluster_size=128k` (bootable, different bytes). Push v1 as `:t`, start, `execInContainer("sha256sum","/vm/base/disk.img")` = v1; push v2 as `:t`, start → v2 and one more cache entry; start `@sha256:<v1 digest>` → v1 | REQ-OCI-05, REQ-DISK-03 | [U] |
-| T29 | `LifecycleIT.startFailureReported` | Slim runner + `VmImage.baked()` (the runner has no `/vm/base/disk.img`) | REQ-LIFE-04 | [U] |
-| T30 | `LifecycleIT.guestAgentTimeout` | `fromPath(<16 MiB raw file of zeros>)`, `withGuestAgentTimeout(10 s)`; also assert the container log had `VMTC_READY` (raw base accepted) | REQ-LIFE-05, REQ-DISK-01 | [U] |
+| T11 | `AudioIT.audioTone` | `info capture` before; start WAV; guest `/usr/bin/speaker-test -t sine -f 1000 -c 2 -l 1`; second `startAudioRecording` → exception; close; `info capture` after; RMS and dominant frequency (DFT of ≤ 65536 samples) in Java; start and close a second recording | REQ-AUD-01, REQ-AUD-02, REQ-AUD-03 | [V] (01); 02, 03 [U] |
+| T12 | `DisplayIT.keyboardType` | `execShell("echo root:vmtc \| chpasswd")`; `type("root\n")`, wait 3 s; `type("vmtc\n")`, wait 5 s; `type("echo TYPED_OK > /dev/ttyS0\n")`; a serial-log consumer must see `TYPED_OK` within 60 s; screenshot | REQ-KEY-01 | [V] (run 5) |
+| T13 | `HotplugIT.usbStorage`, `usbHid`, `usbReadOnly` | Storage: 16 MiB raw image made with `qemu-img` in a runner container. HID: keyboard, tablet, mouse in turn. Read-only: `usbStorage(img, true)` + `dd` + host digest; `close()` unplugs | REQ-HOT-01, REQ-HOT-02, REQ-HOT-10 | storage [V]; HID, read-only [U] |
+| T14 | `HotplugIT.virtioDisk`, `nic`, `portsExhausted` | Host image and `newBlankDisk("64M", VIRTIO)` (`lsblk -b`); `nic("52:54:00:12:34:56")`; `withHotplugPorts(1)` + plug, plug (fails), unplug, plug | REQ-HOT-03, REQ-HOT-04, REQ-HOT-05 | [V] (03, 04); 05 [U] |
+| T15 | `HotplugIT.cdromInsertEject` | ISO with label `VMTCCD` and one file, made with `xorriso` in a runner container; `blkid` after eject | REQ-HOT-06 | [V] |
+| T16 | `HotplugIT.cpuKvm` (`kvm`), `cpuTcg` (`tcg`) | `hotplug(Devices.cpu())`; `unplug()` → `UnsupportedOperationException`; `close()` no-op | REQ-HOT-07, REQ-HOT-10 | [V] (KVM; TCG failure observed) |
+| T17 | `HotplugIT.memory` | `hotplug(Devices.memory(512))`; handle semantics as T16 | REQ-HOT-08, REQ-HOT-10 | [V] |
+| T18 | `ImageSourcesIT` | (a) `fromPath` of the guest qcow2; guest writes 1 MiB + `sync`; stop; cache file SHA-256 unchanged; a second container does not see the file. (b) `fromUrl` from an in-JVM `HttpServer` serving that qcow2, with SHA-256; request log. (c) `fromContainerDisk(<local never-pushed tag>)` → boots + `using local image` WARN once. (d) `baked()` on an image built by the fixture `FROM <slim>` + `COPY disk.qcow2 /vm/base/disk.img`; inspect mounts. (e) containerDisks with 0 files (`FROM scratch` + `WORKDIR /disk`) and 2 files → `IllegalArgumentException`. (f) repeat (a)–(c): cache listing unchanged, no HTTP request. (g) an overlay qcow2 with a backing file (made with `qemu-img create -b` in a runner container) → `IllegalArgumentException` | REQ-DISK-01, REQ-DISK-02, REQ-DISK-03, REQ-DISK-04, REQ-DISK-05, REQ-DISK-06, REQ-DISK-13, REQ-LIFE-03, REQ-GUEST-05, REQ-OCI-07 | partly [V] |
+| T19 | `GuestContractIT.guestNotPrepared` | Stock Rocky served from an in-JVM `HttpServer` (`<syspropPrefix>.it.baseQcow2`) with its SHA-256, no seed → expect `GuestCommandDisabledException`; attach `guest-info`. Then a seed from `CloudInitSeed.builder().runcmd(<G3 sed line>, "systemctl restart qemu-guest-agent")` → expect `GuestAgentConfinedException`; attach `id -Z` | REQ-GUEST-01, REQ-GUEST-02 | [V] (behaviour) |
+| T20 | `AccelIT.kvmRequireWithoutKvm` (`tcg`) | `assumeFalse(KvmDetector.usable())`; property cleared; `withKvm(REQUIRE)` → `start()` throws exactly `KvmUnavailableException`; message equals the §9.6 text for `!present()` or `present() && !usable()` | REQ-KVM-02, REQ-ERR-03 | [U] |
+| T21 | `CleanupIT.orphanCleanup` | With docker-java, create (do not start) three containers from the slim runner image, labelled: (1) other session, created now − 2 h; (2) other session, created now − 10 min; (3) current session, now − 2 h. `VmtcCleanup.removeOrphans()` → returns 1, only (1) is gone. Repeat with override `cleanup=false` → returns 0 | REQ-CLN-01 | [U] |
+| T22 | `UefiIT.uefiBoot` | `withFirmware(Firmware.UEFI)`; `test -d /sys/firmware/efi`; screenshot | REQ-LIFE-09 | [U] |
+| T23 | `GuestContractIT.referenceGuestNoSeed` | `VmImage.referenceGuest()`, no seed; `id -Z`, `ls /lib/modules/$(uname -r)`, `amixer -c 0 get Master` | REQ-GUEST-04, REQ-DISK-11 | [V] (run 5: 11.2 s) |
+| T24 | `RecordingIT.noZombieRecorders` (*media*) | `cat /proc/1/comm`; start + stop a recording; within 2 s `execInContainer("sh","-c","grep -H '^State:' /proc/[0-9]*/status")` has no `Z (zombie)` | REQ-IMG-05 | [V] (tini, sandbox) |
+| T25 | `GuestContractIT.stockRockyWithSeed` | Stock Rocky from the in-JVM server (as T19) + `CloudInitSeed.builder().stockRocky().writeFile("/etc/vmtc-test","x\n").build()`; `saveSerialLog` right after `start()`; T3's first command; read `/etc/vmtc-test`; `amixer` | REQ-GUEST-06, REQ-GUEST-07, REQ-DISK-02 | [V] (seed), file [U] |
+| T26 | `HttpDownloadTest` (`:lib`, engine-free) | In-JVM `HttpServer`s with request logs: (a) no/wrong credentials → `ImageAuthException`, redaction; (b) Basic, Bearer, custom header; (c) `.gz` URL with compressed vs decompressed digest; (d) `.gz`/`.xz`/`.zst`, `AUTO` unknown suffix, `NONE`, `GZIP` without suffix, redirect to `.gz`; (e) cross-origin vs same-origin redirect per credential kind; (f) no checksum: one WARN (via `Warnings.listen`), 304 reuse, 200 replace, server down → cache + WARN; (g) 5 and 6 redirects; (h) 503,503,200 / 503×3 / reset×2 then 200 / 404 / 401 / wrong digest request counts with an injected zero backoff; (i) header stall and read stall, `Secret.fromEnv` laziness | REQ-HTTP-01, REQ-HTTP-02, REQ-HTTP-03, REQ-HTTP-04, REQ-HTTP-05, REQ-HTTP-06, REQ-HTTP-07, REQ-HTTP-08, REQ-HTTP-10 | [V] (a–e); (f)–(i) [U] |
+| T27 | `OciAuthIT.pull` — run by `ociAuthTestA..D`, **one JVM per scenario** (`-D<syspropPrefix>.it.ociScenario=a\|b\|c\|d`) | Fixture registry (§12.1 `oci-auth`). Once, before scenario (a): `podman tag <local guest> <ref>`, `podman login`, `podman push --digestfile <file> <ref>`, `podman logout`. Before each scenario: `podman rmi -f <ref>`, remove `~/.docker/config.json` and `$XDG_RUNTIME_DIR/containers/auth.json`. (a) nothing → `ImageAuthException`; (b) write `config.json`; (c) nothing stored + `OciOptions.credentials`; (d) `podman login` only | REQ-OCI-02, REQ-OCI-03, REQ-OCI-04, REQ-OCI-07 | [V] pull for a, b, d; (c) [U] |
+| T28 | `OciAuthIT.tagMove` — in scenario (b) | Fixture: v1 = the reference guest qcow2; v2 = the same disk re-encoded with `qemu-img convert -c -O qcow2 -o cluster_size=128k` (bootable, different bytes). Push v1 as `:t` (`--digestfile`), start, `execInContainer("sha256sum","/vm/base/disk.img")` = v1, cache listing; start again (same inode); push v2 as `:t`, start → v2 and one more cache entry; start `@sha256:<v1 digest>` → v1 | REQ-OCI-05, REQ-DISK-03, REQ-DISK-12 | [U] |
+| T29 | `LifecycleIT.startFailureReported` | Slim runner + `VmImage.baked()` (the runner has no `/vm/base/disk.img`) → exactly `VmtcException` containing `no base disk` | REQ-LIFE-04, REQ-ERR-03 | [U] |
+| T30 | `LifecycleIT.guestAgentTimeout` | (a) `fromPath(<16 MiB raw file of zeros>)`, `withGuestAgentTimeout(10 s)`, `withLogConsumer` to time `VMTC_READY`; exactly `GuestAgentTimeoutException`. (b) reference guest with `withGuestAgentTimeout(1 s)` → message contains `Linux version` or `login:` | REQ-LIFE-05, REQ-DISK-01, REQ-ERR-03 | [U] |
 | T31 | `RecordingIT.stopFinalizesRecordings` (*media*) | Start a screen recording and an audio recording; call `stop()` without closing them; both host files valid | REQ-LIFE-06 | [U] |
-| T32 | `ExecIT.execTimeout` | `exec(Duration.ofSeconds(2), "/usr/bin/sleep", "60")`; then `exec("/usr/bin/pgrep","-x","sleep")` | REQ-EXEC-04 | [U] |
+| T32 | `ExecIT.execTimeout` | `exec(Duration.ofSeconds(2), "/usr/bin/sleep", "61")`; then `exec("/usr/bin/pgrep","-f","sleep 61")` | REQ-EXEC-04 | [U] |
 | T33 | `RecordingIT.recordingRequiresMedia` | Slim runner; `screen(0).startRecording(...)` | REQ-REC-04 | [U] |
-| T34 | `VmTestExtensionIT.artifactsOnFailure` | JUnit Platform `EngineTestKit` runs a nested `@VmTest` class whose test starts a VM, opens a screen recording (media) and fails | REQ-JUN-01 | [U] |
+| T34 | `VmTestExtensionIT.artifactsOnFailure` (`:junit5` tests, tagged `testkit-only`) | JUnit Platform `EngineTestKit` runs a nested `@VmTest` class (tagged `testkit-only`, excluded from the normal run) whose test starts a media VM, opens a screen recording, and fails; its `@AfterEach` asserts the artifact files already exist | REQ-JUN-01 | [U] |
+| T35 | `KvmCompatIT` (task `compatTest`) | Reads `<envPrefix>IT_KVM_SCENARIO` and `<envPrefix>IT_PODMAN_VERSION` (set by `it/fixtures/kvm-scenario.sh`); property cleared. Case 1 (`PREFER`): `fromPath(<16 MiB raw zeros>)`, `withGuestAgentTimeout(5 s)`, capture logs; expect `GuestAgentTimeoutException`; assert `VMTC_ACCEL`, `HostConfig.Devices`, `Annotations`, `GroupAdd` and the WARN per REQ-KVM-05's scenario table. Case 2 (`REQUIRE`): where case 1 expects `tcg`, expect `KvmUnavailableException` with the group-restricted text; elsewhere a boot that times out at the agent with `VMTC_ACCEL kvm` | REQ-KVM-05, REQ-KVM-06 | [V] (matrix via the spike probe); the JVM-in-login-session part [U] |
+| T36 | `LifecycleIT.resources` | `withCpus(3).withMaxCpus(6).withMemoryMb(1536).withMemoryHotplug(2,"6G")`: `nproc`, `/proc/meminfo`, `query-hotpluggable-cpus`, `query-memory-size-summary`; then `withMemoryMb(4096)` with default maxmem `8G` → ok, and `withMemoryMb(16384)` → `IllegalArgumentException` at `start()` | REQ-LIFE-11 | [U] |
+| T37 | `LifecycleIT.serialLog` | `withSerialLogConsumer` collecting lines; after start: `echo VMTC_MARK_<uuid> > /dev/ttyS0`; time to the consumer; `saveSerialLog` | REQ-LIFE-07 | [U] |
 
 ### 13.2 Engine-free tests (`:lib:test`, `:junit5:test`)
 
 | ID | Class | Covers | Verifies |
 |----|-------|--------|----------|
 | U1 | `QmpClientTest` | In-JVM fake QMP server: greeting + `qmp_capabilities`; event lines skipped while waiting for a return; error → `QmpException(class, desc)`; response timeout | REQ-ERR-02 |
-| U2 | `GuestAgentClientTest` | Fake QGA: leading `0xFF` resync; `guest-sync-delimited` id matching; base64 in/out; exec polling back-off; `out-truncated` / `err-truncated`; reconnect once on I/O error; `CommandNotFound` + "has been disabled" → `GuestCommandDisabledException` | REQ-EXEC-05, REQ-GUEST-01 |
-| U3 | `VmImageCacheTest` | Lock + atomic move; two threads, one key; `fromPath` copy (inode differs) and `index.json` memo; `prune` | REQ-DISK-06..09 |
-| U4 | `KeyboardInputTest` | Appendix A.3 table → qcodes; unsupported character; `press` chord | REQ-KEY-01, REQ-KEY-02 |
+| U2 | `GuestAgentClientTest` | Fake QGA: leading `0xFF` resync; `guest-sync-delimited` id matching; base64 in/out; `0xFF 0x41` → `�A`; exec polling back-off; `out-truncated` / `err-truncated`; omitted `exitcode` + `signal` → `exitCode == -1`; reconnect once and continue polling; `CommandNotFound` + "has been disabled" → `GuestCommandDisabledException` | REQ-EXEC-05, REQ-EXEC-06, REQ-GUEST-01 |
+| U3 | `VmImageCacheTest` | In-JVM lock + file lock; two threads and two JVMs (helper `main` via `ProcessBuilder`) on one key; `fromPath` copy (inode differs) and `index.json` memo (copy count); `prune` incl. side files and index rows; SELinux flag → `SelinuxContext`; `Qcow2Header` on a crafted header with and without backing file | REQ-DISK-06, REQ-DISK-07, REQ-DISK-08, REQ-DISK-09, REQ-DISK-10 |
+| U4 | `KeyboardInputTest` | Appendix A.3 table → qcodes; unsupported character → exception and zero `send-key`; `press` chord | REQ-KEY-01, REQ-KEY-02 |
 | U5 | `VmtcConstantsTest` | Generated constants equal the `gradle.properties` values passed to the test JVM as system properties | REQ-BLD-01 |
-| U6 | `OverridesTest` | Every §9.1 key: property > env > builder > default (env injected through a `Map<String,String>` seam, not the real environment); `referenceGuest()` resolution | REQ-CFG-01, REQ-DISK-11 |
-| U7 | `InfoCaptureParserTest` | `[<n>]: Capturing audio(44100,16,2) to <path>: <bytes> bytes`; several lines; fallback when exactly one line | REQ-AUD-03 |
-| U8 | `KvmDecisionTest` | §8.2 table × §9.6 detector states → device / annotation / `VM_ACCEL` / exception; never `GroupAdd`; exact message strings; one WARN per JVM | REQ-KVM-02..06 |
-| U9 | `ConfigValidationTest` | Builder ranges (REQ-CFG-02 list); TCG timeout scaling | REQ-CFG-02, REQ-DISP-01, REQ-VNC-04, REQ-KVM-07 |
-| U10 | `CloudInitSeedTest` | `forStockRocky()` YAML equals §10.2 byte for byte; builder ordering; `VMTC_SEED_DONE` last | REQ-GUEST-03 |
+| U6 | `OverridesTest` | Every §9.1 key: builder > property > env > default (env injected through a `Map<String,String>` seam); invalid values → `IllegalArgumentException` naming the key; `referenceGuest()` resolution | REQ-CFG-01, REQ-DISK-11 |
+| U7 | `InfoCaptureParserTest` | `[<n>]: Capturing audio(44100,16,2) to <path>: <bytes> bytes`; several lines; fallback when exactly one line; empty output → no capture | REQ-AUD-03 |
+| U8 | `KvmDecisionTest` | §8.2 table × §9.6 detector states → device / annotation / `VM_ACCEL` / exception; never `GroupAdd`; exact message strings; once-per-JVM WARN observed through `Warnings.listen` | REQ-KVM-02, REQ-KVM-03, REQ-KVM-04, REQ-KVM-05, REQ-KVM-06 |
+| U9 | `ConfigValidationTest` | Builder ranges (REQ-CFG-02 list, screens, fps); the timeout table of REQ-KVM-07 for factors 6 and 2.5; explicit values unscaled | REQ-CFG-02, REQ-DISP-01, REQ-KVM-07 |
+| U10 | `CloudInitSeedTest` | `forStockRocky().userData()` equals §10.2 byte for byte (expected text stored as a test resource copied from PLAN.md); every builder rule of REQ-GUEST-06; `VMTC_SEED_DONE` last even for `builder().build()` | REQ-GUEST-03, REQ-GUEST-06 |
 | U11 | `OciReferenceTest` | Tag, digest, default `latest`, registry with port, `oras://` and missing scheme rejected | REQ-OCI-01 |
-| U12 | `SecretAndRedactionTest` | `Secret.toString()`; exception messages contain no secret, user-info or query | REQ-HTTP-02, REQ-HTTP-09 |
+| U12 | `SecretAndRedactionTest` | `Secret.toString()`; `Secret.fromEnv` laziness; exception messages contain no secret, user-info or query | REQ-HTTP-02, REQ-HTTP-09, REQ-HTTP-10 |
 | U13 | `HotplugUnplugTimeoutTest` | Fake QMP whose `qom-list` always contains the device → `HotplugTimeoutException` | REQ-HOT-09 |
-| U14 | `ApiShapeTest` | All public exception types are unchecked and extend `VmtcException`; module descriptor exports every package except `internal` | REQ-ERR-01, REQ-BLD-04 |
-| U15 | `RecorderCommandTest` | `vmtc-rec` argv never contains the password (env only); parsing of `VMTC_REC_OK` / `VMTC_REC_KILLED` / `VMTC_REC_INVALID` | REQ-REC-05, REQ-REC-06 |
-| T26 | `HttpDownloadTest` (`:lib`) | In-JVM `HttpServer`s: (a) no/wrong credentials → `ImageAuthException`; (b) Basic, Bearer, custom header; (c) wrong SHA-256 → `ImageChecksumException`, no file; (d) `.gz`/`.xz`/`.zst` + explicit modes; (e) cross-origin vs same-origin redirect headers; (f) no checksum: one WARN, 304 reuse, 200 replace, server down → cache + WARN; (g) 6 redirects; (h) 503, 503, 200 and 404 request counts. The backoff is injectable so (h) runs without real sleeps. Spike evidence: (a)–(e) [V]; (f)–(h) [U] | REQ-HTTP-01..08 |
+| U14 | `ApiShapeTest` | All public exception types are unchecked and extend `VmtcException`; module descriptor read with `ModuleDescriptor.read(QemuVmContainer.class.getResourceAsStream("/module-info.class"))` exports every package except `internal`; class-file major version of `QemuVmContainer.class` = 44 + `${JAVA_RELEASE}` | REQ-ERR-01, REQ-BLD-04, REQ-PLAT-03 |
+| U15 | `RecorderCommandTest` | `vmtc-rec` argv built by Java; parsing of `VMTC_REC_STARTED`, `VMTC_REC_OK duration=12.346 width=1280 height=800`, `VMTC_REC_KILLED`+`VMTC_REC_OK` (WARN), `VMTC_REC_INVALID` + log → `RecordingException`, missing `VMTC_REC_STARTED` → `RecordingException` | REQ-REC-06 |
+| U16 | `StartupMessagesTest` | `StartupMessages.tail` (60 → lines 11–60; 5 → all); the `VmWaitStrategy` table of §9.2 step 7 against fake log lines; `start()` unwrapping: a `QemuVmContainer` subclass whose `configure()` throws `KvmUnavailableException` → `start()` throws exactly that type (no engine needed: the throw happens before any client call) | REQ-LIFE-04, REQ-ERR-03 |
+| U17 | `CleanupTriggerTest` | Package-private cleanup seam counts invocations: two `start()`s of containers whose `configure()` short-circuits → one invocation; `cleanup=false` → zero | REQ-CLN-02 |
 
 ---
 
 ## 14. Implementation milestones
 
-The step-by-step checklist for each milestone is [PLAN-STEPS.md](PLAN-STEPS.md). A milestone is done when its tests pass on **every** `integration` matrix entry (or are excluded there by their `kvm`/`tcg` tag), `unit` is green, and `checkRequirementTraceability` passes.
+The step-by-step checklist for each milestone is [PLAN-STEPS.md](PLAN-STEPS.md). A milestone is done when its tests pass on **every** `integration` matrix entry (or are excluded there by their `kvm`/`tcg` tag), `unit` is green, `checkRequirementTraceability` passes, and the Allure report of each job shows the milestone's requirements with their evidence attached.
 
 | M | Content | Tests that must pass |
 |---|---------|----------------------|
-| M1 | Gradle skeleton (§5, §11), traceability and hygiene checks, runner images (§6, §7), reference guest build (§10.3, qcow2 and local containerDisk), CI workflow (§12) incl. `compat`; `QemuVmContainer` start/stop; QMP; QGA; exec; copy; `fromPath`; `baked`; basic `fromUrl` (SHA-256, no credentials, no decompression); `CloudInitSeed`; `KvmMode` / §9.6 | U1–U3, U5, U6, U8–U10, U14; T1–T4, T20, T25, T29, T30, T32; §6.4; `compat` job |
-| M2 | Screens, VNC endpoints and password, screenshots, keyboard, `forceModeset`, UEFI | U4; T5–T7, T12, T22 |
-| M3 | `fromContainerDisk`, `fromOci` (engine pull + credentials), full `fromUrl` (§9.3.5), `referenceGuest`, test registry fixture and `oci-auth` CI job; switch `TestImages.guest()` to `referenceGuest()` | U11, U12, T26; T18, T19, T23, T27, T28 |
+| M1 | Gradle skeleton (§5, §11), `test-support` (`@Requirement`, extension, catalog, `Evidence`), check tasks and `allureReport`, runner images (§6, §7), reference guest build (§10.3), CI workflow (§12) incl. `compat`; `QemuVmContainer` start/stop (incl. the `start()` override), QMP, QGA, exec, copy, `fromPath`, `baked`, basic `fromUrl` (SHA-256, no credentials, no decompression), `CloudInitSeed`, `KvmMode`/§9.6, `Warnings` | U1–U3, U5, U6, U8–U10, U14, U16, U17; T1–T4, T20, T25, T29, T30, T32, T35, T36, T37; §6.4; `compat` job |
+| M2 | Screens, VNC endpoints, screenshots, keyboard, `forceModeset`, UEFI | U4; T5, T6, T12, T22 |
+| M3 | `fromContainerDisk`, `fromOci` (engine pull + credentials + local fallback), full `fromUrl` (§9.3.5), `referenceGuest`, test registry fixture and `oci-auth` CI job; switch `TestImages.guest()` to `referenceGuest()` | U11, U12, T26; T18, T19, T23, T27, T28 |
 | M4 | Screen recording (media), audio | U7, U15; T8–T11, T24, T31, T33 |
 | M5 | Hot-plug | U13; T13–T17 |
-| M6 | JUnit extension, orphan cleanup, CI hardening, manual procedures (REQUIREMENTS.md §5), docs | T21, T34; every job green; every requirement traced |
+| M6 | JUnit extension, orphan cleanup, full traceability (`traceabilityRequireFullCoverage=true`), CI hardening, manual procedures (REQUIREMENTS.md §5), docs | T21, T34; every job green; every requirement traced |
 
 ---
 
@@ -1323,7 +1440,7 @@ The step-by-step checklist for each milestone is [PLAN-STEPS.md](PLAN-STEPS.md).
 |---|------|--------|----------|
 | L1 | vCPU hot-plug under TCG: device added, but the guest never sees it (every TCG run; root cause unknown) | no CPU hot-plug without KVM | `Devices.cpu()` → `UnsupportedOperationException` under TCG |
 | L2 | Secondary screens dark until the guest modesets them | placeholder 640×480 frames | `forceModeset()` for console guests; document |
-| L3 | VNC auth: ≤ 8 characters | weak auth | default bind 127.0.0.1; password is an accident guard |
+| L3 | *(merged into L8 — VNC is unauthenticated by decision D8)* | — | — |
 | L4 | No H.264/AV1 encoders | WebM/VP8 only | accept |
 | L5 | Red Hat: direct qemu-kvm and TCG unsupported | no vendor support | accept for test infrastructure |
 | R1 | Rocky RPMs on UBI could conflict in future point releases | build break | pinned `${ROCKY_RELEASE}`; build-time guard; weekly scheduled CI |
@@ -1335,14 +1452,19 @@ The step-by-step checklist for each milestone is [PLAN-STEPS.md](PLAN-STEPS.md).
 | L6 | **Image mounts not used** (they would avoid the extraction copy): Docker needs API ≥ 1.48 while Testcontainers defaults to 1.44; Podman's inspect output breaks docker-java's `Binds` parser | one extra disk copy per image digest | Extraction + bind (§9.3.6). Revisit when Podman/docker-java fix the inspect issue |
 | L7 | ORAS artifacts (`oras push`) are **not supported**: disks are published as OCI images instead (§10.4). The ORAS Java SDK was prototyped and rejected (dependency weight) | — | Publish with §10.4 |
 | R7 | Large HTTP downloads over slow links | long first-run time | cache; retries; per-request timeout option |
+| R8 | Allure Java 2.x is the previous major (3.0.0 shipped 2026-09); its JUnit adapter declares JUnit 5.10.3 runtime deps that the 5.14 BOM overrides | a future 2.x drop would force the 3.x/JUnit 6 move | D10; versions live in §0 |
+| R9 | `--single-file` Allure reports embed every attachment; a job with many WebM recordings can produce a report of tens of MB | slow to open | keep recordings short (≤ 12 s, 1 Mbps); the raw results are uploaded too |
+| L8 | VNC is unauthenticated (D8) | anyone who can reach the published port can view and type into the VM | loopback bind by default; `withVncBindAddress` is an explicit opt-in |
 
 ---
 
 ## 16. Assumptions to confirm
 
 1. §0 values are examples; replace them at adoption.
-2. `${GRADLE_VERSION}`, `${JACKSON_VERSION}` and `${ASSERTJ_VERSION}` were not checked against release pages. Use the current versions.
-3. Maximum screens = 4 and default hot-plug ports = 4 are design choices; only 2 screens and 4 ports were exercised.
+2. `${ASSERTJ_VERSION}` was not checked against release pages; the other versions in §0 were checked on 2026-10-18. Use the current versions when adopting.
+3. Maximum screens = 4 and default hot-plug ports = 4 are design choices; only 2 screens and 4 ports were exercised (T6 exercises 4 screens).
+6. The read-stall watchdog in §9.3.5 step 4 (closing a JDK `HttpClient` body stream from another thread unblocks the reader) is [U]; T26 (i) settles it.
+7. JUnit tags cannot be set dynamically through a meta-annotation, so `@Requirement` does not create JUnit tags; this is by design (REQUIREMENTS.md §3.1).
 4. `${ART_JUNIT}` is optional.
 5. Publishing images publicly depends on R2.
 
@@ -1360,6 +1482,7 @@ All on branch `claude/vm-testcontainer-plan-lqhfa6` of this repository (PR #9).
 | Compat probe | `vm-testcontainer/spike-java/` (`PodmanKvmProbeTest`, `run-scenario.sh`; `PullAuthProbeTest`, `run-pull-auth.sh` for R13) |
 | Download probes (R13) | `vm-testcontainer/spike-oras/` (`HttpDownloadTest` = candidate §9.3.5 algorithm; `OrasPullTest` = rejected ORAS SDK option; `run-oras-ci.sh`) |
 | Workflow | `.github/workflows/vm-testcontainer-spikes.yml` |
+| Primary-source checks on 2026-10-18 (versions, jar signatures, package lists) | `javap` on testcontainers-2.0.5 (`doStart`/`tryStart` wrapping; `PullPolicy`), `allure-java-commons` 2.35.5 and 3.0.0 (annotations and `Allure` API), Maven Central metadata (Allure, JUnit, Gradle), `dnf repoquery -l edk2-ovmf` on `rockylinux:9`, `allure help generate` (2.46.1) |
 
 | CI run | Showed |
 |--------|--------|
@@ -1386,19 +1509,20 @@ All on branch `claude/vm-testcontainer-plan-lqhfa6` of this repository (PR #9).
 - **Design:** `QemuVmContainer` runs one QEMU VM per Podman container on a UBI 9.8 runner image. QEMU and `gstreamer1-plugins-good` come from a pinned Rocky 9.8 fallback; `tini` comes from EPEL. Java drives QEMU through QMP and the guest through QGA, over loopback-published TCP ports.
 - **Verified on GitHub-hosted runners** with real KVM (Podman 4.9.3 and 5.7.0) and TCG:
   - exec and copy;
-  - per-screen screenshots and VNC (exposed, optional password);
+  - per-screen screenshots and VNC (exposed, unauthenticated, loopback by default);
   - per-screen GStreamer WebM recording;
   - WAV audio;
   - keyboard;
   - hot-plug of USB, PCIe disk/NIC, CD, memory, and vCPU (KVM only).
 - **Images:** every source ends up as a cached, read-only base disk plus a per-start overlay. Sources: host paths, `http(s)://` (optional SHA-256, credentials, gz/xz/zst), and `oci://` containerDisk images. OCI images are pulled by the engine with engine or explicit credentials, then extracted. No ORAS SDK. A pre-customized Rocky 9 guest is shipped as a containerDisk; the pipeline is verified, and that guest is ready about 11 s after start under KVM.
-- **Rules that matter** (§1 a–i): `tini`; `incremental=false`; validate recordings by file; `force-shared`; per-display `set_password`; guest RPC filter **and** SELinux permissive domain; the keep-groups **annotation**, never `GroupAdd`; internal QMP socket.
+- **Rules that matter** (§1 a–l): `tini`; `incremental=false`; validate recordings by file; `force-shared`; unwrap `ContainerLaunchException` in `start()`; guest RPC filter **and** SELinux permissive domain; the keep-groups **annotation**, never `GroupAdd`; internal QMP socket; builder beats overrides; in-JVM lock beside the file lock; `PublishAllPorts=false`.
+- **Verification:** 122 requirement stories (3 retired) in REQUIREMENTS.md, each with evidence attached to a per-job Allure report; the build enforces that every test names the requirement it proves.
 - **Open:**
   - publishing/licensing of the mixed image (R2);
   - an SELinux-host acceptance run (R3);
   - UEFI paths (T22).
 - **Adoption:** edit **§0 only**.
-- **Companion documents:** [REQUIREMENTS.md](REQUIREMENTS.md) (testable `REQ-*` IDs; tests tag them) and [PLAN-STEPS.md](PLAN-STEPS.md) (the checklist to implement this plan).
+- **Companion documents:** [REQUIREMENTS.md](REQUIREMENTS.md) (testable `REQ-*` stories by epic and feature; tests carry `@Requirement`) and [PLAN-STEPS.md](PLAN-STEPS.md) (the checklist to implement this plan).
 
 ---
 

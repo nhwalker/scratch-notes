@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# End-to-end re-check of spikes #4/#7 with the consolidated seed (run on the host; needs vmtc-spike:media image).
+# End-to-end re-check of spikes #4/#7 with the consolidated seed (run on the host; needs vmtc-spike:gst image).
 # Usage: spike47-verify.sh <base-disk.qcow2>
 set -uo pipefail; cd "$(dirname "$0")"; IMG=$1; E=${ENGINE:-docker}
 $E rm -f spikevm >/dev/null 2>&1
-$E run -d --name spikevm --network host -v "$IMG":/vm/base/disk.img:ro -v "$PWD":/spike vmtc-spike:media \
+$E run -d --name spikevm --network host -v "$IMG":/vm/base/disk.img:ro -v "$PWD":/spike vmtc-spike:gst \
   bash -c 'xorriso -as mkisofs -quiet -V cidata -J -r -o /vm/seed.iso /spike/seed/user-data /spike/seed/meta-data && /spike/start-vm.sh' >/dev/null
 T0=$(date +%s); X="$E exec spikevm /spike/vmctl.py"
 echo "qga_ready_s=$($X wait-qga 900)"

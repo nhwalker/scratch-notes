@@ -149,3 +149,64 @@ The seed was run on a fresh overlay with no manual steps: relax the RPC filter, 
 | cloud-init runcmd done (includes `dnf install alsa-utils`) | 654 s |
 | guest-exec domain | still labelled `virt_qemu_ga_t`, as expected: a permissive domain keeps its label but its denials are not enforced. `aplay -l` now lists `card 0: Intel [HDA Intel]` |
 | wavcapture of the 1 kHz tone | 6.02 s, RMS 11776, ~1000 Hz: **PASS** |
+
+---
+
+# Phase 0 — GStreamer VNC recording and multi-screen (2026-10-18)
+
+**Result: PASS**, with design constraints (below).
+
+## Setup
+
+- **Runner image:** `vmtc-spike:gst`, built by `install-packages.sh media`. The media variant now installs GStreamer instead of ffmpeg.
+- **Guest:** the same Rocky 9.8 GenericCloud image, booted with the offline seed (`SEED_PACKAGES=`).
+  - QGA was ready in 82–92 s and runcmd was done in about 281 s.
+- **Multi-screen:** `VM_SCREENS=2` in `start-vm.sh`.
+- **Recording:** `gst-record.sh` holds the pipeline; `rec.sh` provides start/stop control.
+
+## GStreamer packages (UBI first, Rocky fallback)
+
+| Package | Repo | Provides |
+|---------|------|----------|
+| `gstreamer1` 1.22.12 | **UBI** appstream | core, `gst-launch-1.0`, `gst-inspect-1.0` |
+| `gstreamer1-plugins-base` | **UBI** appstream | `videoconvert`, `videorate` |
+| `gstreamer1-plugins-bad-free` | **UBI** appstream | **`rfbsrc`** (VNC client source) |
+| `gstreamer1-plugins-good` | **Rocky** appstream only | `vp8enc`, `vp9enc`, `webmmux`, `matroskamux`, `jpegenc`, `avimux`, `qtmux`/`mp4mux`, `wavparse`, `wavenc` |
+| `gstreamer1-plugins-base-tools` | **Rocky** appstream only | `gst-discoverer-1.0`, used to validate files |
+
+- **Not available:** `x264enc`, `openh264enc`, `av1enc`. So H.264 and AV1 are out; **use VP8/WebM**. VP9 is also available.
+- **Image size:** the gst media image came to 253 MB content, against 277 MB for the ffmpeg-free variant.
+
+## Multi-screen: one VNC server per display head
+
+- **QEMU syntax:** `-device VGA,id=video0 -device secondary-vga,id=video1 ... -vnc <bind>:<i>,id=vnc<i>,display=video<i>`. Display *i* listens on TCP port 5900+*i*.
+- **QMP:** `query-vnc-servers` lists each server with its `display` id.
+- **Screenshots per head:** `screendump` with `"device":"video<i>"` captures that head.
+- **Guest view:** Rocky 9 sees each head as its own `bochs-drm` DRM card and fbdev (`fb0`/`card0` = 00:01.0 and `fb1`/`card1` = 00:02.0).
+- **Secondary heads start dark.** They show *"Guest has not initialized the display (yet)."* at 640×480 until the guest modesets them.
+  - A text console only drives head 0. A desktop session or a DRM client would drive the others.
+  - The spike forced it with `fb-activate.py`, which issues `FBIOPUT_VSCREENINFO` with `FB_ACTIVATE_FORCE` on `/dev/fb1`. Head 1 then went to 1280×800 and showed content written to `/dev/fb1`.
+
+## Recording pipeline (verified)
+
+```
+gst-launch-1.0 -q -e rfbsrc host=127.0.0.1 port=<5900+i> view-only=true shared=true incremental=false [password=..] \
+  ! videorate ! video/x-raw,framerate=10/1 ! videoconvert \
+  ! vp8enc deadline=1 cpu-used=8 threads=2 target-bitrate=1000000 ! webmmux ! filesink location=<out>.webm
+```
+
+| Check | Result |
+|-------|--------|
+| Two screens recorded concurrently (16.6 s wall clock) | screen0 16.7 s / 167 frames; screen1 16.6 s / 166 frames; 1280×800 VP8 @10 fps; both decode |
+| Stop (SIGINT → `-e` sends EOS) | process exits in **~110 ms**; the file is finalized and correct |
+| `gst-launch` exit code after a SIGINT stop | **1, every time**, with a benign `Error on setup VNC connection` line. Judge success by validating the file, not by the exit code |
+| `incremental=true` (default) on a static screen | **blocks with no frames.** Use `incremental=false`. QEMU then answers on its adaptive refresh timer (~0.1–0.7 s on a static screen), and `videorate` fills the gaps |
+| Recorder child processes when QEMU is the container's PID 1 | **zombies.** QEMU does not reap orphans. The image **must** run an init (`tini`, from EPEL) as PID 1 |
+| Exclusive (non-shared) VNC client under the default `share` policy | **disconnects the recorder** |
+| Same under `share=force-shared` | recorders keep running |
+| `password=on` + QMP `set_password {protocol:vnc, display:vnc<i>}` | wrong password rejected ("Authentication failed"); correct password works for `rfbsrc`. `change-vnc-password` only sets the default display, so use `set_password` per display |
+
+Notes:
+
+- `catatonit` (Rocky CRB) and `dumb-init` (EPEL) are alternatives to `tini`.
+- Under `force-shared`, the exclusive `rfbsrc` client itself was disconnected during negotiation rather than downgraded to shared. That is unexplained, but harmless for the design: library users should connect as shared clients.

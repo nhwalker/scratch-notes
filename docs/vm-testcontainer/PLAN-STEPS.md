@@ -377,7 +377,7 @@
   - **B:** remove that rule; `sudo chown root:kvm /dev/kvm; sudo chmod 0660 /dev/kvm; sudo usermod -aG kvm "$USER"`; start the service **in a fresh login session** so `kvm` is a *supplementary* group: `setsid sudo -iu "$USER" env XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" podman system service --time=0 unix://<sock> >/dev/null 2>&1 &`; then poll `curl -s --unix-socket <sock> http://d/_ping` until `OK` (max 30 s).
   - **C:** as B, plus `~/.config/containers/containers.conf` containing `[containers]` / `annotations = ["run.oci.keep_original_groups=1"]` written **before** the service starts.
   - Write `DOCKER_HOST=unix://<sock>`, `TESTCONTAINERS_RYUK_DISABLED=true`, `<envPrefix>IT_KVM_SCENARIO=<S>` and `<envPrefix>IT_PODMAN_VERSION=$(podman --version | awk '{print $3}')` to `$GITHUB_ENV` (or print `export …` lines for local use).
-- [ ] **Run the test JVM like a logged-in user for B and C**, so `KvmDetector.usable()` is true: `sudo -iu "$USER" env XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" JAVA_HOME="$JAVA_HOME" DOCKER_HOST="$DOCKER_HOST" TESTCONTAINERS_RYUK_DISABLED=true <envPrefix>IT_KVM_SCENARIO=<S> <envPrefix>IT_PODMAN_VERSION=<v> bash -c 'cd "$GITHUB_WORKSPACE" && ./gradlew --no-daemon :it:compatTest'`. Without this the CI shell lacks the group, the library correctly decides "not usable", and the annotation path is never exercised. **[U]**: the spike ran only the Podman service and CLI this way, not the test JVM; log the outcome.
+- [ ] **Run the test JVM like a logged-in user for B and C**, so `KvmDetector.usable()` is true: `sudo -iu "$USER" env XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" JAVA_HOME="$JAVA_HOME" DOCKER_HOST="$DOCKER_HOST" TESTCONTAINERS_RYUK_DISABLED=true <envPrefix>IT_KVM_SCENARIO=<S> <envPrefix>IT_PODMAN_VERSION=<v> bash -c 'cd "$GITHUB_WORKSPACE" && ./gradlew --no-daemon :it:compatTest'`. Without this the CI shell lacks the group, the library correctly decides "not usable", and the annotation path is never exercised. Verified in the spike (CI run 16): the CI-shell JVM reports `/dev/kvm` readable=false, the `sudo -iu` JVM readable=true writable=true, on both runners.
 - [ ] `KvmCompatIT` (T35) per PLAN.md §13.1, attaching `scenario.txt`, `inspect.json`, `warnings.txt`.
 - [ ] CI job `compat` (matrix ubuntu-24.04, ubuntu-26.04): `./gradlew :images:verifyRunnerImages`; for S in A, B, C: run the script, then `:it:compatTest` as above (plain invocation is fine for A); `allureReport`; uploads.
 
@@ -501,7 +501,7 @@
 - [ ] Gradle `ociAuthTestA`..`ociAuthTestD` + aggregate `ociAuthTest` per PLAN.md §11.1; fail (not skip) if `<envPrefix>IT_REGISTRY` is missing.
 - [ ] CI job `oci-auth` per PLAN.md §12.1 (incl. `base.qcow2` cache, `verifyRunnerImages`/`buildGuestDisk` through the task dependencies, `allureReport`, uploads).
 
-**Verify:** `oci-auth` job green. Record in §D whether T27 (c) — explicit `AuthConfig` — worked as written (it is **[U]**).
+**Verify:** `oci-auth` job green. (The explicit-`AuthConfig` pull itself was verified in the spike, CI run 16; T27 (c) adds the boot.)
 **Requirements:** REQ-OCI-02..05, REQ-OCI-07, REQ-DISK-03, REQ-DISK-12
 
 ### Step 3.8 — Remaining M3 integration tests

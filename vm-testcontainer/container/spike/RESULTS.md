@@ -314,3 +314,27 @@ Registries: `registry:2` with htpasswd, TLS on `registry.test:5443` (self-signed
 | S3: only `podman login` (`$XDG_RUNTIME_DIR/containers/auth.json`) | pulled (Podman uses its own credentials when the client sends none) |
 
 Not exercised: explicit `AuthConfig` on `pullImageCmd` (plan T27c), ETag revalidation (T26f), tag move through the engine (T28).
+
+## Run 16 (`39167116353`): explicit-credential pull, login-session JVM, HTTP stalls
+
+### Engine pull with credentials passed on the request (`run-pull-auth.sh` S4/S5, Podman 4.9.3)
+
+| Scenario | Result |
+|----------|--------|
+| S4: no `config.json`, no `podman login`; `pullImageCmd(ref).withAuthConfig(AuthConfig{registryAddress, username, password})` | pulled (`via=explicit-AuthConfig`), image present afterwards |
+| S5: same with a wrong password | `com.github.dockerjava.api.exception.UnauthorizedException: Status 401: {"message":"unauthorized: authentication required"}` (top-level exception, same class as S1's no-credentials failure through `RemoteDockerImage`) |
+
+### Which JVM sees `/dev/kvm` in the 0660 scenarios (`run-scenario.sh`, `PodmanKvmProbeTest.jvmKvmAccess`)
+
+| Scenario | JVM started from the CI shell | JVM started via `sudo -iu $USER` |
+|----------|-------------------------------|----------------------------------|
+| A (0666) | readable=true writable=true (no `kvm` group needed) | not run |
+| B (0660 root:kvm, user in kvm) | readable=**false** writable=**false**; groups lack `kvm` | readable=true writable=true; groups include `kvm` |
+| C (B + containers.conf annotation) | readable=**false** writable=**false** | readable=true writable=true |
+
+Observed on ubuntu-24.04 (Podman 4.9.3) for B and C and on ubuntu-26.04 (Podman 5.7.0) for C. The device variants (`device-only`, `device+annotation`) behaved as in run 4 from both JVMs. Consequence for the production `compat` job: the test JVM must run in a login session, otherwise `KvmDetector.usable()` is false and the annotation path is never exercised.
+
+### HTTP stalls (`HttpDownloadTest`, local sandbox)
+
+- Server sends headers + 4 KB then stalls: a watchdog closing the `ofInputStream()` body after 2 s of no progress makes the blocked `read()` throw `IOException: closed` at 2.0 s.
+- Server never sends headers: `HttpRequest.timeout(2 s)` → `java.net.http.HttpTimeoutException` at 2.0 s.

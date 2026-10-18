@@ -38,6 +38,16 @@ DOCKER_HOST="unix://$SOCK" TESTCONTAINERS_RYUK_DISABLED=true PROBE_EXPECT_KVM_MO
 echo "image-mount with -Dapi.version=1.48:" >> target/probe-results.txt
 DOCKER_HOST="unix://$SOCK" TESTCONTAINERS_RYUK_DISABLED=true mvn -B -q test -Dtest=PodmanKvmProbeTest#imageMount -Dapi.version=1.48 \
   -Dprobe.image="$IMAGE" || echo "MVN_FAILED(api1.48)" >> target/probe-results.txt
-{ echo "podman: $(podman --version)  scenario=$NAME mode=$MODE conf=${CONF:-none}"; cat target/probe-results.txt; } > "../../probe-$NAME.txt"
+# Plan T35: in the 0660 scenarios, also run the probe JVM itself in a fresh LOGIN session (kvm as a supplementary
+# group), as the production compat job must, and record what the JVM sees on /dev/kvm plus the device variants.
+rm -f target/probe-results-login.txt
+if [ "$MODE" = 0660 ]; then
+  login "cd '$PWD' && JAVA_HOME='$JAVA_HOME' PATH='$PATH' DOCKER_HOST='unix://$SOCK' TESTCONTAINERS_RYUK_DISABLED=true PROBE_EXPECT_KVM_MODE='$MODE' \
+    PROBE_KVM_GID='$(getent group kvm | cut -d: -f3)' mvn -B -q test -Dprobe.results=target/probe-results-login.txt \
+    -Dtest='PodmanKvmProbeTest#jvmKvmAccess+deviceOnly+deviceKeepGroupsAnnotation' -Dprobe.image='$IMAGE'" \
+    || echo "MVN_FAILED(login-session)" >> target/probe-results-login.txt
+fi
+{ echo "podman: $(podman --version)  scenario=$NAME mode=$MODE conf=${CONF:-none}"; echo "--- JVM in the CI shell:"; cat target/probe-results.txt;
+  if [ -f target/probe-results-login.txt ]; then echo "--- JVM in a login session (sudo -iu):"; cat target/probe-results-login.txt; fi; } > "../../probe-$NAME.txt"
 cat "../../probe-$NAME.txt"
 kill "$SVC" 2>/dev/null; pkill -f "podman system service --time=0 unix://$SOCK" 2>/dev/null; true

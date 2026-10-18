@@ -23,11 +23,25 @@ class PullAuthProbeTest {
     String ref = System.getenv("PULL_REF");
     Assumptions.assumeTrue(ref != null, "PULL_REF not set");
     String scenario = System.getenv().getOrDefault("PULL_SCENARIO", "?");
+    String user = System.getenv("PULL_AUTH_USER");
     String outcome;
     try {
-      String id = new RemoteDockerImage(DockerImageName.parse(ref)).get();
+      String id;
+      if (user != null) {
+        // T27c candidate: explicit credentials on the pull itself (no config.json, no podman login)
+        DockerImageName name = DockerImageName.parse(ref);
+        var auth = new com.github.dockerjava.api.model.AuthConfig()
+            .withRegistryAddress(name.getRegistry()).withUsername(user).withPassword(System.getenv("PULL_AUTH_PASS"));
+        DockerClientFactory.instance().client().pullImageCmd(ref).withAuthConfig(auth)
+            .exec(new com.github.dockerjava.api.command.PullImageResultCallback())
+            .awaitCompletion(5, java.util.concurrent.TimeUnit.MINUTES);
+        id = DockerClientFactory.instance().client().inspectImageCmd(ref).exec().getId();
+      } else {
+        id = new RemoteDockerImage(DockerImageName.parse(ref)).get();
+      }
       boolean present = DockerClientFactory.instance().client().inspectImageCmd(ref).exec() != null;
-      outcome = "PULLED id=" + id.substring(0, Math.min(19, id.length())) + " present=" + present;
+      outcome = "PULLED id=" + id.substring(0, Math.min(19, id.length())) + " present=" + present
+          + (user != null ? " via=explicit-AuthConfig" : " via=RemoteDockerImage");
     } catch (Exception e) {
       StringBuilder chain = new StringBuilder("FAILED");
       for (Throwable x = e; x != null; x = x.getCause()) {

@@ -7,7 +7,7 @@
 
 ## 1. BLUF
 
-- **8 epics → 22 features → 122 stories (3 retired).** Every story is one requirement row with an ID (`REQ-<FEATURE>-<NN>`), a short title, a "shall" statement, measurable acceptance criteria, the **evidence** a test must attach so a human can see the proof, how it is verified, and where it came from.
+- **8 epics → 22 features → 123 stories (3 retired).** Every story is one requirement row with an ID (`REQ-<FEATURE>-<NN>`), a short title, a "shall" statement, measurable acceptance criteria, the **evidence** a test must attach so a human can see the proof, how it is verified, and where it came from.
 - **Tests point here with one annotation:** `@Requirement("REQ-EXEC-01")`. A JUnit extension turns that into the Allure Epic → Feature → Story hierarchy, links the test to this document, and puts the requirement text into the test's description (§3).
 - **Evidence is attached to the Allure report:** container and serial logs for every VM test, plus per-requirement screenshots, screen recordings (WebM, played inline), audio (WAV + rendered waveform/spectrum image), command transcripts and inspect output (§3.3). The report is a CI artifact per job (§3.5).
 - **Traceability is enforced by the build:** unknown IDs fail immediately; from the last milestone on, a *Test* requirement without a test fails too (§3.4).
@@ -230,6 +230,7 @@ The check does not verify that the test named in the *Method* cell (e.g. `T18`) 
 | REQ-DISK-11 | referenceGuest() resolution | `VmImage.referenceGuest()` shall resolve to the `guestImage` override if set, else `${IMAGE_GUEST}:${VERSION}` | U6 asserts both resolutions; T23 boots it | `vm-config.json` | Test: U6, T23 | D3 |
 | REQ-DISK-12 | Cache reuse (OCI) | `fromOci` shall reuse the cache entry while the image ID is unchanged and create a new entry when a tag moves | Same tag twice → same inode, no new `<key>.img`; after the tag moves → one more `<key>.img` | `cache-listing.txt`, `pull.txt` | Test: T28 | PLAN §9.3.6 |
 | REQ-DISK-13 | No backing files | `fromPath` shall reject a qcow2 whose `qemu-img info` shows a `backing-filename` with `IllegalArgumentException` naming the backing file | Fixture overlay with a backing file → that exception at `start()` | `exception.txt`, `qemu-img-info.json` | Test: T18 | PLAN §9.3.1 |
+| REQ-DISK-14 | Sparse copies | `fromPath` shall preserve sparseness when copying into the cache: zero-filled regions of the source become holes in the cache file | U3: a 64 MiB raw file with 1 MiB of random data at offset 0 and zeros elsewhere → cache file content identical, apparent size 64 MiB, allocated blocks (`stat -c '%b*%B'`) below 4 MiB; a source whose last 8 MiB are zeros keeps the 64 MiB length | `cache-listing.txt` (apparent and allocated sizes) | Test: U3 | PLAN §9.3.1 |
 
 #### Feature HTTP: HTTP(S) downloads
 

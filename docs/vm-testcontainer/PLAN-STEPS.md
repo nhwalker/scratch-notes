@@ -289,13 +289,14 @@
 ### Step 1.17 — Image cache, `fromPath` and `baked()`
 - [ ] `image.Qcow2Header` (magic, `backingFile(Path)` → `Optional<String>`) per PLAN.md §9.3.1.
 - [ ] `image.VmImageCache` per §9.3.1: per-key `ReentrantLock` + `FileChannel.lock()`; tmp file + `ATOMIC_MOVE`; `index.json` with the given schema under `index.lock`; touch on use; `prune(Duration)` incl. side files and index rows; the SELinux flag (`selinuxEnforcing`, injectable) decides `SelinuxContext`.
-- [ ] `fromPath`: backing-file rejection; key = SHA-256; memo; `Files.copy`, never a link.
+- [ ] `image.SparseCopy.copy(Path src, Path dst)` per PLAN.md §9.3.1 (1 MiB blocks, skip all-zero blocks by positioning, set the final length).
+- [ ] `fromPath`: backing-file rejection; key = SHA-256; memo; `SparseCopy`, never a link.
 - [ ] `VmImage.baked()` behaviour: no cache, no bind (PLAN.md §9.3.4). Needed by T29.
-- [ ] **U3 `VmImageCacheTest`:** two threads; two JVMs (a helper `main` in `lib/src/test/java` launched with `ProcessBuilder` using the test classpath); no leftover tmp files; inode differs from the source; memo hit avoids a second copy (count via a spy stream); `prune`; SELinux flag; `Qcow2Header` on crafted headers. Evidence `cache-listing.txt`, `bind.txt`.
+- [ ] **U3 `VmImageCacheTest`:** two threads; two JVMs (a helper `main` in `lib/src/test/java` launched with `ProcessBuilder` using the test classpath); no leftover tmp files; inode differs from the source; memo hit avoids a second copy (count via a spy stream); `prune`; SELinux flag; `Qcow2Header` on crafted headers; `SparseCopy` allocated-size check via `stat -c '%b %B'` (REQ-DISK-14). Evidence `cache-listing.txt`, `bind.txt`.
 
 **Spec:** PLAN.md §9.3.1, §9.3.2, §9.3.4
 **Verify:** `./gradlew :lib:test --tests '*VmImageCacheTest'` passes.
-**Requirements:** REQ-DISK-06, REQ-DISK-07, REQ-DISK-08, REQ-DISK-09, REQ-DISK-10 (unit part) (U3)
+**Requirements:** REQ-DISK-06, REQ-DISK-07, REQ-DISK-08, REQ-DISK-09, REQ-DISK-10 (unit part), REQ-DISK-14 (U3)
 
 ### Step 1.18 — Basic HTTP download
 - [ ] `image.ImageDownloader` with PLAN.md §9.3.5 steps 1–7 **without** credentials and decompression: `HttpClient` with `Redirect.NEVER`, manual redirects (≤ 5, `ImageDownloadException` on the 6th), status handling, `DigestInputStream`, SHA-256 check, atomic move, retries with an injectable `Backoff`. `UrlOptions` with `sha256`, `timeout` and `defaults()` for now.
@@ -457,12 +458,12 @@
 **Requirements:** REQ-OCI-01 (U11)
 
 ### Step 3.3 — Full HTTP download
-- [ ] Complete PLAN.md §9.3.5: `Secret` (incl. lazy `fromEnv`), `HttpCredentials.basic/bearer/header`, same-origin-only credential headers, `Compression` (AUTO by the final URL's suffix, explicit modes) via commons-compress (+ xz, zstd-jni), the read-stall watchdog **[U]**, revalidation with `<key>.meta.json` (one attempt), one WARN per URL without checksum, URL redaction in messages.
+- [ ] Complete PLAN.md §9.3.5: `Secret` (incl. lazy `fromEnv`), `HttpCredentials.basic/bearer/header`, same-origin-only credential headers, `Compression` (AUTO by the final URL's suffix, explicit modes) via commons-compress (+ xz, zstd-jni), the read-stall watchdog (verified in the spike: close the body stream from a watchdog thread), revalidation with `<key>.meta.json` (one attempt), one WARN per URL without checksum, URL redaction in messages.
 - [ ] Complete **T26 `HttpDownloadTest`** cases (a)–(i) per PLAN.md §13.2; generate `.xz`/`.zst` fixtures in the test with commons-compress output streams; request logs as `http-requests.txt`.
 - [ ] **U12 `SecretAndRedactionTest`.**
 
 **Spec:** PLAN.md §9.3.5
-**Verify:** `./gradlew :lib:test --tests '*HttpDownloadTest' --tests '*SecretAndRedactionTest'` passes. Record the read-stall outcome (case i) in §D.
+**Verify:** `./gradlew :lib:test --tests '*HttpDownloadTest' --tests '*SecretAndRedactionTest'` passes.
 **Requirements:** REQ-HTTP-01..10 (T26, U12)
 
 ### Step 3.4 — `baked()` success-path fixture

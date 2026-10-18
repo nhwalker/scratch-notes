@@ -255,6 +255,89 @@ class HttpDownloadTest {
   }
 
   /** Fact-finding: what does the JDK do on its own with a user-set Authorization header and Redirect.NORMAL? */
+  /**
+   * Plan §9.3.5 step 4 / T26 (i): a server that sends headers and a few bytes, then stalls. The JDK HttpClient has
+   * no read timeout, so the candidate design closes the body InputStream from a watchdog thread. Does the blocked
+   * read() return promptly with an IOException?
+   */
+  @Test
+  void readStallWatchdogUnblocksRead() throws Exception {
+    HttpServer stall = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+    stall.setExecutor(java.util.concurrent.Executors.newCachedThreadPool());
+    stall.createContext("/stall", ex -> {
+      ex.sendResponseHeaders(200, 10_000_000);
+      OutputStream os = ex.getResponseBody();
+      os.write(new byte[4096]);
+      os.flush();
+      try { Thread.sleep(60_000); } catch (InterruptedException ignored) { }
+      ex.close();
+    });
+    stall.start();
+    try {
+      HttpClient client = HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NEVER).build();
+      HttpResponse<InputStream> resp = client.send(
+          HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + stall.getAddress().getPort() + "/stall"))
+              .timeout(java.time.Duration.ofSeconds(5)).build(),
+          HttpResponse.BodyHandlers.ofInputStream());
+      InputStream in = resp.body();
+      byte[] buf = new byte[65536];
+      long total = 0;
+      java.util.concurrent.atomic.AtomicLong lastProgress = new java.util.concurrent.atomic.AtomicLong(System.nanoTime());
+      java.util.concurrent.atomic.AtomicBoolean closedByWatchdog = new java.util.concurrent.atomic.AtomicBoolean();
+      Thread watchdog = new Thread(() -> {
+        try {
+          while (true) {
+            Thread.sleep(100);
+            if (System.nanoTime() - lastProgress.get() > java.time.Duration.ofSeconds(2).toNanos()) {
+              closedByWatchdog.set(true);
+              in.close();
+              return;
+            }
+          }
+        } catch (Exception ignored) { }
+      }, "watchdog");
+      watchdog.setDaemon(true);
+      watchdog.start();
+      long t0 = System.nanoTime();
+      String outcome;
+      try {
+        int n;
+        while ((n = in.read(buf)) >= 0) { total += n; lastProgress.set(System.nanoTime()); }
+        outcome = "read returned EOF (unexpected)";
+      } catch (IOException e) {
+        outcome = "read threw " + e.getClass().getSimpleName() + ": " + e.getMessage();
+      }
+      double secs = (System.nanoTime() - t0) / 1e9;
+      record(String.format("read-stall watchdog: bytes=%d closedByWatchdog=%s after %.1fs -> %s", total, closedByWatchdog.get(), secs, outcome));
+      assertTrue(closedByWatchdog.get(), "watchdog did not fire");
+      assertTrue(secs < 10, "read did not return promptly: " + secs + "s");
+      assertTrue(outcome.startsWith("read threw"), outcome);
+    } finally {
+      stall.stop(0);
+    }
+  }
+
+  /** The headers-stall half of T26 (i): HttpRequest.timeout bounds the wait for response headers. */
+  @Test
+  void headerStallTimesOut() throws Exception {
+    HttpServer stall = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+    stall.setExecutor(java.util.concurrent.Executors.newCachedThreadPool());
+    stall.createContext("/hdr", ex -> { try { Thread.sleep(60_000); } catch (InterruptedException ignored) { } ex.close(); });
+    stall.start();
+    try {
+      HttpClient client = HttpClient.newBuilder().build();
+      long t0 = System.nanoTime();
+      var e = assertThrows(Exception.class, () -> client.send(
+          HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + stall.getAddress().getPort() + "/hdr"))
+              .timeout(java.time.Duration.ofSeconds(2)).build(), HttpResponse.BodyHandlers.ofInputStream()));
+      double secs = (System.nanoTime() - t0) / 1e9;
+      record(String.format("header-stall: %s after %.1fs", e.getClass().getName(), secs));
+      assertTrue(secs < 10, "" + secs);
+    } finally {
+      stall.stop(0);
+    }
+  }
+
   @Test
   void jdkRedirectNormalBehaviour() throws Exception {
     lastAuthSeenByB.clear();

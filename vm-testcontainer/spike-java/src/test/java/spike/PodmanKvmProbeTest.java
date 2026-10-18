@@ -27,7 +27,23 @@ import org.testcontainers.containers.startupcheck.OneShotStartupCheckStrategy;
 class PodmanKvmProbeTest {
 
   static final String IMAGE = System.getProperty("probe.image", "localhost/vmtc-spike:media");
-  static final Path RESULTS = Path.of("target", "probe-results.txt");
+  static final Path RESULTS = Path.of(System.getProperty("probe.results", "target/probe-results.txt"));
+
+  /**
+   * Plan T35 precondition: the library decides "KVM usable" from the JVM's own view of /dev/kvm. In the 0660
+   * scenarios that is only true when the JVM itself runs with the kvm supplementary group (login session).
+   */
+  @Test
+  void jvmKvmAccess() throws Exception {
+    Path kvm = Path.of("/dev/kvm");
+    String id = new String(new ProcessBuilder("id").start().getInputStream().readAllBytes()).strip();
+    String ls = new String(new ProcessBuilder("ls", "-l", "/dev/kvm").start().getInputStream().readAllBytes()).strip();
+    String rec = "jvm | exists=" + Files.exists(kvm) + " readable=" + Files.isReadable(kvm) + " writable=" + Files.isWritable(kvm)
+        + " | " + id + " | " + ls + System.lineSeparator();
+    Files.createDirectories(RESULTS.getParent());
+    Files.writeString(RESULTS, rec, java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND);
+    System.out.print("### " + rec);
+  }
 
   static final String PROBE = String.join("\n",
       "import os, fcntl, json",

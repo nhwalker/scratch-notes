@@ -27,5 +27,9 @@ DOCKER_HOST="unix://$SOCK" TESTCONTAINERS_RYUK_DISABLED=true mvn -B -q test -Dte
   -Dprobe.image="$IMAGE" -Dprobe.containerdisk=$REF || true
 clean; podman login -u $U -p $P $REG >/dev/null; ls -l "$XDG_RUNTIME_DIR/containers/auth.json"
 run S3-podman-login-only
+# S4: nothing stored anywhere; credentials passed explicitly on pullImageCmd (plan T27c)
+clean; PULL_AUTH_USER=$U PULL_AUTH_PASS=$P run S4-explicit-authconfig
+# S5: explicit but WRONG credentials -> what does docker-java throw? (plan §9.3.3 error mapping)
+clean; PULL_AUTH_USER=$U PULL_AUTH_PASS=wrong run S5-explicit-authconfig-wrong-password
 clean; kill $SVC 2>/dev/null; true
 echo "=== pull results"; cat target/pull-results.txt; echo "=== image mount (private image)"; grep image-mount target/probe-results.txt

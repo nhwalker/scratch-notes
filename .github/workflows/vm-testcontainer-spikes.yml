@@ -174,7 +174,15 @@ jobs:
       - name: Registries + oras CLI pushes + Java SDK / HTTP tests
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: set -o pipefail; vm-testcontainer/spike-oras/run-oras-ci.sh 2>&1 | tee oras-http.log
+        run: set -o pipefail; KEEP_REGISTRIES=1 vm-testcontainer/spike-oras/run-oras-ci.sh 2>&1 | tee oras-http.log
+
+      - name: Build spike runner image (slim)
+        run: podman build -q -f "$SPIKE_DIR/Containerfile.spike" --build-arg VARIANT=slim -t "$IMAGE" "$SPIKE_DIR"
+
+      - name: Engine pull of a private containerDisk (S1/S2/S3 credentials) + image mount via Testcontainers
+        run: |
+          set -o pipefail
+          CA_PEM="$PWD/vm-testcontainer/spike-oras/work/certs/cert.pem" vm-testcontainer/spike-java/run-pull-auth.sh 2>&1 | tee pull-auth.log
 
       - name: Publish results
         if: always()
@@ -188,7 +196,9 @@ jobs:
           name: oras-http-probe
           path: |
             oras-http.log
+            pull-auth.log
             vm-testcontainer/spike-oras/target/*-results.txt
+            vm-testcontainer/spike-java/target/*-results.txt
           retention-days: 14
 
   compat-api-probe:

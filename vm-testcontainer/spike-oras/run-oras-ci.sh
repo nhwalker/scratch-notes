@@ -63,5 +63,5 @@ podman login --tls-verify=false -u "$U" -p "$P" localhost:5000 >/dev/null
 ls -l "$XDG_RUNTIME_DIR/containers/auth.json"
 ORAS_SCENARIO=podman mvn -B -q test -Dtest=OrasPullTest || FAIL=1
 echo "=== results"; cat target/http-results.txt target/oras-results.txt
-podman rm -f reg-tls reg-plain >/dev/null || true
+[ "${KEEP_REGISTRIES:-0}" = 1 ] || podman rm -f reg-tls reg-plain >/dev/null || true
 exit $FAIL

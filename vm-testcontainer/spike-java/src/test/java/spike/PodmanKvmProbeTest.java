@@ -161,7 +161,9 @@ class PodmanKvmProbeTest {
     String want = java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(expected)));
     for (String variant : new String[] {"whole", "subpath"}) {
       com.github.dockerjava.api.model.Mount m = new com.github.dockerjava.api.model.Mount()
-          .withType(com.github.dockerjava.api.model.MountType.IMAGE).withSource(disk).withReadOnly(true);
+          .withType(com.github.dockerjava.api.model.MountType.IMAGE).withSource(disk);
+      // ReadOnly deliberately unset: Podman's compat API maps ReadOnly=true to an "ro" option that image mounts reject
+      // ("fill out specgen: ro: invalid mount option"); image mounts are read-only by default (checked below).
       String file;
       if (variant.equals("whole")) {
         m.withTarget("/vm/image");

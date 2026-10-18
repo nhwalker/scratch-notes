@@ -539,6 +539,7 @@ This is the verified `gst-record.sh` + `rec.sh` **[V]** (the spike also verified
 
 **`stop`:**
 
+0. If the PID from `/vm/run/<name>.pid` is already gone (or a zombie) **before** the signal is sent, the recorder died on its own: print `VMTC_REC_DIED` followed by the last 20 lines of `/vm/out/<name>.log` and stop here (Java maps it to `RecordingException`, §9.8). A silently truncated file is never reported as success.
 1. `kill -INT <pid>`.
 2. Poll every 100 ms. The process counts as alive only if `/proc/<pid>` exists **and** its `State:` is not `Z`. Give up after the timeout.
 3. If it is still alive: `kill -9` it and print `VMTC_REC_KILLED`.
@@ -986,6 +987,7 @@ public interface KeyboardInput { void type(String text); void press(String... qc
   2. Load classpath resource `<${BASE_PACKAGE} as path>/display/vmtc-fb-activate.py` (Appendix A.4).
   3. `copyToVm(bytes, "/tmp/vmtc-fb-activate.py")`.
   4. `exec("/usr/bin/python3","/tmp/vmtc-fb-activate.py","/dev/fb"+index)`. A non-zero exit throws `VmtcException` with the script's output.
+  5. **Wait for the modeset to land:** poll `screenshot()` every 200 ms until the image is no longer 640×480 (or 10 s elapse → `VmtcException("screen <i> did not change mode")`). The VNC server resizes its framebuffer only when QEMU processes the new mode; a recorder attached before that sees a desktop-size change. One CI run (spike run 18) produced a 0.8 s recording of head 1 that had been modeset immediately before; the recorder's log was not captured, so the cause is not proven, but waiting for the new size removes the race as a suspect (§15 R10).
 
   Guest `python3` is present in Rocky GenericCloud [V].
 - **`type(text)`:**
@@ -1005,7 +1007,7 @@ public interface KeyboardInput { void type(String text); void press(String... qc
 - **`ScreenRecording`** (`AutoCloseable`):
   - `close()` runs `vmtc-rec stop <name> 10`.
     - `VMTC_REC_OK duration=<s> width=<w> height=<h>` → `copyFileFromContainer("/vm/out/<name>.webm", hostWebm)`; parse the three values (`duration` is decimal seconds).
-    - `VMTC_REC_INVALID` → `RecordingException` with the whole stop output (it includes the log tail).
+    - `VMTC_REC_INVALID` or `VMTC_REC_DIED` → `RecordingException` with the whole stop output (it includes the recorder's log tail).
     - `VMTC_REC_KILLED` followed by `VMTC_REC_OK` → success plus a WARN through `Warnings`.
     - `close()` is idempotent; a second call returns immediately.
   - Accessors: `Path file()`, `Duration duration()`, `int width()`, `int height()`, valid after `close()`.
@@ -1468,6 +1470,7 @@ The step-by-step checklist for each milestone is [PLAN-STEPS.md](PLAN-STEPS.md).
 | R7 | Large HTTP downloads over slow links | long first-run time | cache; retries; per-request timeout option |
 | R8 | Allure Java 2.x is the previous major (3.0.0 shipped 2026-09); its JUnit adapter declares JUnit 5.10.3 runtime deps that the 5.14 BOM overrides | a future 2.x drop would force the 3.x/JUnit 6 move | D10; versions live in §0 |
 | R9 | `--single-file` Allure reports embed every attachment; a job with many WebM recordings can produce a report of tens of MB | slow to open | keep recordings short (≤ 12 s, 1 Mbps); the raw results are uploaded too |
+| R10 | **Intermittent short recording** (spike run 18, image-mount boot): head 1 recorded 0.8 s of a 12 s window; the same check passed in the two other boots of that run and in all other runs; the recorder's own log was not captured | a truncated video would pass silently without the `VMTC_REC_DIED` rule | `vmtc-rec stop` reports a recorder that exited early (§7.2 step 0); `forceModeset()` waits for the new mode (§9.7); the spike harness now keeps `screen<i>.log`, so a recurrence is diagnosable; T8/T10 assert the duration |
 | L8 | VNC is unauthenticated (D8) | anyone who can reach the published port can view and type into the VM | loopback bind by default; `withVncBindAddress` is an explicit opt-in |
 
 ---

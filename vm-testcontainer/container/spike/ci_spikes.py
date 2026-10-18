@@ -238,6 +238,15 @@ def c_vnc():
     return "; ".join(det) + " (RFB handshake from the host through the published port)"
 
 
+def screen_size(i):
+    qmp({"execute": "screendump", "arguments": {"filename": f"/vm/out/size{i}.png", "device": f"video{i}", "format": "png"}})
+    d = open(copy_out(f"/vm/out/size{i}.png"), "rb").read(24)
+    return int.from_bytes(d[16:20], "big"), int.from_bytes(d[20:24], "big")
+
+
+modeset_wait = []
+
+
 @check("record_screens")
 def c_record():
     if args.screens > 1:
@@ -245,6 +254,12 @@ def c_record():
         for i in range(1, args.screens):
             r = gexec("/usr/bin/python3", "/tmp/fb-activate.py", f"/dev/fb{i}")
             assert r["exit"] == 0, r
+            # plan §9.7 forceModeset(): return only once the head shows its new mode (run 18 recorded 0.8 s of a
+            # 12 s window on head 1 right after the modeset; a recorder attached before the VNC framebuffer resize
+            # is the prime suspect)
+            t = wait_until(lambda: screen_size(i) != (640, 480), 10, 0.2)
+            assert t is not None, f"video{i} still 640x480 10 s after fb-activate"
+            modeset_wait.append(f"video{i} modeset visible after {t:.1f}s")
     for i in range(args.screens):
         cx("/spike/rec.sh", "start", f"screen{i}", str(5900 + i))
     t0 = time.time()
@@ -256,6 +271,10 @@ def c_record():
     det = []
     for i in range(args.screens):
         r = cx("/spike/rec.sh", "stop", f"screen{i}", check=False)
+        try:
+            copy_out(f"/vm/out/screen{i}.log")
+        except Exception:
+            pass
         assert "stopped in" in r.stdout, r.stdout + r.stderr
         stop_ms = re.search(r"stopped in (\d+) ms", r.stdout).group(1)
         info = cx("gst-discoverer-1.0", f"/vm/out/screen{i}.webm").stdout

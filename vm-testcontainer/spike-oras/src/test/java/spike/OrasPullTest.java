@@ -32,7 +32,7 @@ class OrasPullTest {
 
   static final Path RESULTS = Path.of("target", "oras-results.txt");
   static final String TITLE = "org.opencontainers.image.title";
-  static final String TLS = System.getenv("ORAS_TLS");          // e.g. localhost:5443 (self-signed CA)
+  static final String TLS = System.getenv("ORAS_TLS");          // e.g. registry.test:5443 (self-signed CA)
   static final String PLAIN = System.getenv("ORAS_PLAIN");      // e.g. localhost:5000 (http)
   static final String CA = System.getenv("ORAS_CA");
   static final String USER = System.getenv("ORAS_USER");

@@ -17,15 +17,18 @@ ORAS="$W/oras --registry-config $W/oras-config.json"   # keep oras' own login ou
 "$W/oras" version | head -1
 
 # --- registries ---
+# TLS registry is addressed as registry.test (oras CLI forces plain HTTP for "localhost"; real registries have names)
+grep -q " registry.test" /etc/hosts || echo "127.0.0.1 registry.test" | sudo tee -a /etc/hosts >/dev/null
+T=registry.test:5443
 openssl req -x509 -newkey rsa:2048 -nodes -keyout "$W/certs/key.pem" -out "$W/certs/cert.pem" -days 2 \
-  -subj /CN=localhost -addext "subjectAltName=DNS:localhost,IP:127.0.0.1" 2>/dev/null
+  -subj /CN=registry.test -addext "subjectAltName=DNS:registry.test,DNS:localhost,IP:127.0.0.1" 2>/dev/null
 podman run --rm --entrypoint htpasswd docker.io/library/httpd:2 -Bbn "$U" "$P" > "$W/auth/htpasswd"
 AUTH=(-e REGISTRY_AUTH=htpasswd -e REGISTRY_AUTH_HTPASSWD_REALM=spike -e REGISTRY_AUTH_HTPASSWD_PATH=/auth/htpasswd)
 podman run -d --name reg-tls -p 5443:5000 -v "$W/certs:/certs:Z" -v "$W/auth:/auth:Z" "${AUTH[@]}" \
   -e REGISTRY_HTTP_TLS_CERTIFICATE=/certs/cert.pem -e REGISTRY_HTTP_TLS_KEY=/certs/key.pem docker.io/library/registry:2 >/dev/null
 podman run -d --name reg-plain -p 5000:5000 -v "$W/auth:/auth:Z" "${AUTH[@]}" docker.io/library/registry:2 >/dev/null
 for i in $(seq 1 30); do
-  [ "$(curl -s -o /dev/null -w '%{http_code}' --cacert "$W/certs/cert.pem" https://localhost:5443/v2/)" = 401 ] && \
+  [ "$(curl -s -o /dev/null -w '%{http_code}' --cacert "$W/certs/cert.pem" https://$T/v2/)" = 401 ] && \
   [ "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:5000/v2/)" = 401 ] && break; sleep 1; done
 podman image inspect docker.io/library/registry:2 --format 'registry image {{.Id}} {{index .Labels "org.opencontainers.image.version"}}' || true
 
@@ -35,26 +38,26 @@ head -c 8388608 /dev/urandom > disk.qcow2
 echo "vmtc spike readme" > README.txt
 xz -k -T0 disk.qcow2
 CA="--ca-file $W/certs/cert.pem"
-$ORAS login $CA -u "$U" -p "$P" localhost:5443 >/dev/null
+$ORAS login $CA -u "$U" -p "$P" $T >/dev/null
 $ORAS login --plain-http -u "$U" -p "$P" localhost:5000 >/dev/null
 AT="--artifact-type application/vnd.vmtc.vm-image.v1"
-$ORAS push $CA $AT localhost:5443/vmtc/single:v1 disk.qcow2 >/dev/null
-$ORAS push $CA $AT localhost:5443/vmtc/multi:v1 disk.qcow2 README.txt >/dev/null
-$ORAS push $CA $AT localhost:5443/vmtc/xz:v1 disk.qcow2.xz >/dev/null
-$ORAS push $CA $AT localhost:5443/vmtc/moving:latest disk.qcow2 >/dev/null
-export ORAS_MOVING_OLD=$($ORAS manifest fetch $CA --descriptor localhost:5443/vmtc/moving:latest | jq -r .digest)
-$ORAS push $CA $AT localhost:5443/vmtc/moving:latest README.txt >/dev/null
-export ORAS_MOVING_NEW=$($ORAS manifest fetch $CA --descriptor localhost:5443/vmtc/moving:latest | jq -r .digest)
+$ORAS push $CA $AT $T/vmtc/single:v1 disk.qcow2 >/dev/null
+$ORAS push $CA $AT $T/vmtc/multi:v1 disk.qcow2 README.txt >/dev/null
+$ORAS push $CA $AT $T/vmtc/xz:v1 disk.qcow2.xz >/dev/null
+$ORAS push $CA $AT $T/vmtc/moving:latest disk.qcow2 >/dev/null
+export ORAS_MOVING_OLD=$($ORAS manifest fetch $CA --descriptor $T/vmtc/moving:latest | jq -r .digest)
+$ORAS push $CA $AT $T/vmtc/moving:latest README.txt >/dev/null
+export ORAS_MOVING_NEW=$($ORAS manifest fetch $CA --descriptor $T/vmtc/moving:latest | jq -r .digest)
 $ORAS push --plain-http $AT localhost:5000/vmtc/single:v1 disk.qcow2 >/dev/null
-echo "--- oras manifest (single:v1) as pushed by oras $VER:"; $ORAS manifest fetch $CA localhost:5443/vmtc/single:v1 | jq -c .
+echo "--- oras manifest (single:v1) as pushed by oras $VER:"; $ORAS manifest fetch $CA $T/vmtc/single:v1 | jq -c .
 cd - >/dev/null
 
 # --- tests ---
-export ORAS_TLS=localhost:5443 ORAS_PLAIN=localhost:5000 ORAS_CA="$W/certs/cert.pem" ORAS_USER="$U" ORAS_PASS="$P" ORAS_EXPECT_DIR="$W/expect"
+export ORAS_TLS=$T ORAS_PLAIN=localhost:5000 ORAS_CA="$W/certs/cert.pem" ORAS_USER="$U" ORAS_PASS="$P" ORAS_EXPECT_DIR="$W/expect"
 rm -f target/*-results.txt
 [ -f ~/.docker/config.json ] && mv ~/.docker/config.json ~/.docker/config.json.spike-bak || true
 mvn -B -q test || FAIL=1                                                   # default scenario + HTTP tests
-printf '{"auths":{"localhost:5443":{"auth":"%s"}}}' "$(printf '%s:%s' "$U" "$P" | base64 -w0)" > "$W/authfile.json"
+printf '{"auths":{"%s":{"auth":"%s"}}}' "$T" "$(printf '%s:%s' "$U" "$P" | base64 -w0)" > "$W/authfile.json"
 ORAS_SCENARIO=authfile REGISTRY_AUTH_FILE="$W/authfile.json" mvn -B -q test -Dtest=OrasPullTest || FAIL=1
 podman login --tls-verify=false -u "$U" -p "$P" localhost:5000 >/dev/null
 ls -l "$XDG_RUNTIME_DIR/containers/auth.json"

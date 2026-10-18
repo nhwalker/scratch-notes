@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Spike #5 scenario runner (CI). Usage: run-scenario.sh <name> <0666|0660> [containers.conf-file]
 #   0666: /dev/kvm world rw (udev rule), podman service started normally
-#   0660: /dev/kvm root:kvm 0660, runner user added to kvm, podman service started via `sg kvm`
+#   0660: /dev/kvm root:kvm 0660, runner user added to kvm; the podman service (and CLI reference runs) are started
+#         in a fresh login session (`sudo -iu $USER`) so kvm is a SUPPLEMENTARY group, as for a real logged-in user.
+#         (`sg kvm` would make kvm the primary group, which keep-groups does not preserve.)
 # Optional containers.conf is installed to ~/.config/containers/containers.conf for the service.
 set -uo pipefail
 NAME=$1 MODE=$2 CONF=${3:-}
@@ -18,11 +20,14 @@ ls -l /dev/kvm
 mkdir -p ~/.config/containers; rm -f ~/.config/containers/containers.conf
 [ -n "$CONF" ] && cp "$CONF" ~/.config/containers/containers.conf && echo "containers.conf:" && cat ~/.config/containers/containers.conf
 SOCK="$XDG_RUNTIME_DIR/podman/podman-$NAME.sock"; mkdir -p "$(dirname "$SOCK")"
-if [ "$MODE" = 0666 ]; then podman system service --time=0 "unix://$SOCK" & else sg kvm -c "podman system service --time=0 unix://$SOCK" & fi
+# run a command as a fresh login of the same user (supplementary groups re-read from /etc/group)
+login() { sudo -iu "$USER" env XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" IMAGE="$IMAGE" bash -c "$1"; }
+if [ "$MODE" = 0666 ]; then podman system service --time=0 "unix://$SOCK" & else echo "service identity: $(login id)"; login "exec podman system service --time=0 unix://$SOCK" & fi
 SVC=$!; sleep 3
 if [ "$MODE" = 0660 ]; then
-  echo "CLI reference (no group-add):"; sg kvm -c "podman run --rm --device /dev/kvm $IMAGE python3 -c \"import os; os.open('/dev/kvm', os.O_RDWR); print('CLI_OPEN_OK')\"" 2>&1 | tail -1
-  echo "CLI reference (--group-add keep-groups):"; sg kvm -c "podman run --rm --device /dev/kvm --group-add keep-groups $IMAGE python3 -c \"import os; os.open('/dev/kvm', os.O_RDWR); print('CLI_KEEPGROUPS_OPEN_OK')\"" 2>&1 | tail -1
+  PY="import os; os.open('/dev/kvm', os.O_RDWR); print('OPEN_OK')"
+  echo "CLI reference (no group-add): $(login "podman run --rm --device /dev/kvm \$IMAGE python3 -c \"$PY\"" 2>&1 | tail -1)"
+  echo "CLI reference (--group-add keep-groups): $(login "podman run --rm --device /dev/kvm --group-add keep-groups \$IMAGE python3 -c \"$PY\"" 2>&1 | tail -1)"
 fi
 rm -f target/probe-results.txt
 DOCKER_HOST="unix://$SOCK" TESTCONTAINERS_RYUK_DISABLED=true PROBE_EXPECT_KVM_MODE="$MODE" \

@@ -466,7 +466,7 @@ The module defines a **guest contract** and ships a reference build recipe.
   - Ship a `build-guest-image` recipe that uses `virt-customize`. Whether libguestfs is available on UBI or Rocky in the container is **U**; it can run on the host.
   - Publish the result as a containerDisk (§7).
 
-**Reference test guest:** choosing a small, QGA-capable x86-64 guest image for this module's own integration tests is an open question (§14).
+**Reference test guest (decided):** Rocky 9 x86-64. Start from the GenericCloud qcow2, then customize it: enable `qemu-guest-agent`, clear `FILTER_RPC_ARGS` and set `console=ttyS0`. Publish it as a containerDisk. **Scope:** Linux guests only.
 
 ---
 
@@ -650,7 +650,7 @@ Phase 0  Spikes (de-risk)      ──► Phase 1  Core VM        ──► Phase
    - Do `/dev/kvm` device mapping, `GroupAdd: ["keep-groups"]` and the annotation fallback take effect through the docker-java socket?
    - Run this both rootless and rootful.
 6. **ffmpeg-free on UBI + EPEL:** does it install? Which CRB packages come from UBI CRB, and which need Rocky CRB? Is `libvpx-vp9` listed among the encoders?
-7. **Reference guest:** choose and build a small x86-64 guest with QGA (exec allowed) and record its boot time under KVM and TCG.
+7. **Reference guest:** build the Rocky 9 GenericCloud-based guest with QGA (exec allowed) and record its boot time under KVM and TCG.
 
 **Exit criteria:**
 
@@ -706,12 +706,12 @@ Phase 0  Spikes (de-risk)      ──► Phase 1  Core VM        ──► Phase
 | K1 fallback (UBI + Rocky mix fails) | **Decide after Phase 0 spike #1** (options: Rocky 9.8 base, or RHEL-entitled build) |
 | Image variants | **Slim runner + `-media` variant** (ffmpeg-free only in media) |
 | Module placement | **Multi-module**: root `pom.xml` becomes aggregator; `vm-testcontainer` is a child module |
+| Guest OS scope | **Linux guests only** (v1 and beyond unless revisited) |
+| Reference test guest | **Rocky 9** (x86-64 GenericCloud base, customized with QGA exec/file RPCs allowed) |
 
 ### Still open
 
-1. **Reference guest OS** for this module's own tests: Rocky 9 (heavy, ecosystem match), Fedora Cloud, Alpine (small; QGA + non-systemd init to verify), other?
-2. **Guest OS scope:** Linux-only for v1? (Windows would need virtio-win drivers + Windows QGA, not covered here.)
-3. **K2 licensing** check for publishing a UBI + Rocky/EPEL mixed image.
+1. **K2 licensing** check for publishing a UBI + Rocky/EPEL mixed image.
 
 ---
 
@@ -731,4 +731,5 @@ Phase 0  Spikes (de-risk)      ──► Phase 1  Core VM        ──► Phase
   - The UBI + Rocky repo mix (K1) is the riskiest item.
   - Others: the device allow-list, slirp vs passt, `wavcapture` with the `none` backend, `/dev/kvm` group handling through Podman's compat API, ffmpeg-free codecs, and a reference guest.
 - **Decided:** slim + media images, multi-module build. The K1 fallback is decided after the spike.
-- **Still open (§14):** the reference guest OS, the guest OS scope, and the licensing check (K2).
+- **Also decided:** Linux guests only; Rocky 9 is the reference test guest.
+- **Still open (§14):** the licensing check (K2).

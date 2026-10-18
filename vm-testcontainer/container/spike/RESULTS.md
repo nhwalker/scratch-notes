@@ -73,7 +73,6 @@
 - **#5:** Podman compat API with `/dev/kvm` and keep-groups.
 - **#7:** booting the Rocky 9 reference guest.
 - Final image size.
-- **Licensing (K2):** this was a technical check only.
 
 ---
 

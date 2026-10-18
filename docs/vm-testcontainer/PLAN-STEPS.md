@@ -64,7 +64,7 @@
 **Verify:** `git show --stat HEAD` lists `docs/vm-testcontainer/PLAN.md`, and the commit message has one `<name> <version> <source URL> <date>` line per version row.
 
 ### Step 0.4 — Record open decisions
-- [ ] Open the Deviation log (§D) and confirm its seeded items: R2 (decided: private registry only) and R3 (SELinux hosts).
+- [ ] Open the Deviation log (§D) and confirm its seeded items: R3 (SELinux hosts) and the UEFI verification note.
 
 **Verify:** §D lists the three items with owner "unassigned" or a name.
 
@@ -633,9 +633,8 @@
 **Verify:** the README's quick-start code block, pasted into a fresh `:it` test, compiles and passes T2's criteria.
 
 ### Step 6.7 — Publish (blocked: destination not yet chosen)
-- [ ] **Do not publish.** The Maven publishing destination (Maven Central, GitHub Packages, an internal repository) has not been decided (PLAN.md §16 item 8). Until it is, `publishToMavenLocal` is the only publishing task that runs, and `pushImages` stays guarded by `-PpushImages=true`.
+- [ ] **Do not publish.** The Maven publishing destination (Maven Central, GitHub Packages, an internal repository) has not been decided (PLAN.md §16 item 6). Until it is, `publishToMavenLocal` is the only publishing task that runs, and `pushImages` stays guarded by `-PpushImages=true`.
 - [ ] When the destination is decided, add a §D entry and extend this step with: the `publishing { repositories { … } }` block, credentials via CI secrets, and (Maven Central only) POM metadata, GPG signing and sources/javadoc jars.
-- [ ] `pushImages` targets the organisation's **private** registry only (PLAN.md §15 R2); never a public one.
 
 **Verify:** the release head still passes the §6.G gate; nothing has been published anywhere.
 
@@ -653,9 +652,8 @@ Record every place where reality differed from PLAN.md, every [U] outcome, and e
 
 | # | Date | Step | What happened / decision | PLAN.md or REQUIREMENTS.md updated? | Owner / status |
 |---|------|------|--------------------------|-------------------------------------|----------------|
-| 1 | 2026-10-18 | 0.4 | R2 decided: UBI stays (enterprise policy); images go only to a private registry inside the organisation, never public. Residual question for the policy owner: EULA §2 trademark-removal wording vs intra-organisation sharing | PLAN.md §15 R2, §0, §6.4 check 11 (license label inherited) | closed (residual: policy owner) |
-| 2 | | 0.4 | R3: SELinux-enforcing host acceptance (REQ-DISK-10) | — | open |
-| 3 | 2026-10-18 | 0.4 | UEFI boot of the reference guest verified in the spike (CI run 19): efivars present, all checks pass | PLAN.md §8.4, §3.2, §13 T22 | closed |
+| 1 | | 0.4 | R3: SELinux-enforcing host acceptance (REQ-DISK-10) | — | open |
+| 2 | 2026-10-18 | 0.4 | UEFI boot of the reference guest verified in the spike (CI run 19): efivars present, all checks pass | PLAN.md §8.4, §3.2, §13 T22 | closed |
 
 ---
 

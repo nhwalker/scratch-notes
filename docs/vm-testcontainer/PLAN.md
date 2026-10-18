@@ -25,7 +25,7 @@ In the implementation, each value is stored in **exactly one** file, given in th
 | `${ART_LIB}` | `vm-testcontainer` | Artifact ID of the Java library | `gradle.properties` → `artifactLib` |
 | `${ART_JUNIT}` | `vm-testcontainer-junit5` | Artifact ID of the optional JUnit 5 extension | `gradle.properties` → `artifactJunit` |
 | `${BASE_PACKAGE}` | `io.github.nhwalker.vmtestcontainer` | Root Java package | source tree + `gradle.properties` → `basePackage` (for code generation) |
-| `${IMAGE_REGISTRY}` | `ghcr.io/nhwalker` | Registry/namespace for runner and guest images. **Must be a private registry** reachable only inside the organisation (§15 R2) | `gradle.properties` → `imageRegistry` |
+| `${IMAGE_REGISTRY}` | `ghcr.io/nhwalker` | Registry/namespace for runner and guest images | `gradle.properties` → `imageRegistry` |
 | `${IMAGE_RUNNER_NAME}` | `vmtc-runner` | Runner image repository name (`${IMAGE_RUNNER}` = `${IMAGE_REGISTRY}/${IMAGE_RUNNER_NAME}`) | `gradle.properties` → `imageRunnerName` |
 | `${IMAGE_GUEST_NAME}` | `vmtc-guest-rocky9` | Reference guest containerDisk name (`${IMAGE_GUEST}` = `${IMAGE_REGISTRY}/${IMAGE_GUEST_NAME}`) | `gradle.properties` → `imageGuestName` |
 | `${IMAGE_TAG_SUFFIX}` | `ubi9.8` | Base-OS marker appended to runner tags | `gradle.properties` → `imageTagSuffix` |
@@ -459,7 +459,6 @@ Run each check inside every built image (`<engine> run --rm --entrypoint /bin/ba
 9. `. /etc/os-release && [ "$ID" = rhel ] && [ "$VERSION_ID" = <tag of ${UBI_IMAGE}, e.g. 9.8> ]` [REQ-IMG-01]
 10. Resolution order [REQ-IMG-02]: `dnf -q repoquery --installed --qf '%{from_repo}' <pkg>` prints `rocky-fallback-appstream` for `qemu-kvm-core`, `epel9` for `tini`, and a repo id starting with `ubi-9-` for `jq`. Only packages installed by the Containerfile's own `dnf install` are meaningful here: for packages that came with the base image layer (e.g. `bash`) dnf 4.14 prints an opaque transaction id instead of a repo **[V]** (checked on `rockylinux:9`, dnf 4.14.0).
 
-11. *host:* `<engine> image inspect --format '{{index .Labels "com.redhat.license_terms"}}' <image>` prints `https://www.redhat.com/en/about/red-hat-end-user-license-agreements#UBI` — the UBI base image carries the EULA as this label (it ships **no** `/licenses` directory **[V]**, checked on `ubi9/ubi:9.8`), and a derived image inherits it unless a `LABEL` overrides it (§15 R2).
 ---
 
 ## 7. In-container scripts
@@ -1263,7 +1262,7 @@ ADD --chown=107:107 <name>.qcow2 /disk/<name>.qcow2      # exactly ONE regular f
 | `verifyRunnerImages` | §6.4 checks; `dependsOn` both builds |
 | `downloadGuestBase` | download `baseUrl` to `images/build/guest/base.qcow2`, verify `baseSha256`; skipped when the file already verifies |
 | `buildGuestDisk` | `images/guest/customize.sh <engine> <slim tag> images/build/guest/base.qcow2 images/build/guest/work <imageRegistry>/<imageGuestName>:<version> <kvm if /dev/kvm usable else tcg>`, then the REQ-GUEST-05 format checks (one layer, empty `Config.Cmd`/`Entrypoint`, one regular file uid/gid 107 under `/disk/`); `dependsOn buildRunnerSlim, downloadGuestBase` |
-| `pushImages` | `<engine> push` the three tags to `${IMAGE_REGISTRY}` (a **private** registry, §15 R2); `onlyIf { project.findProperty('pushImages') == 'true' }` |
+| `pushImages` | `<engine> push` the three tags to `${IMAGE_REGISTRY}`; `onlyIf { project.findProperty('pushImages') == 'true' }` |
 
 ### 11.3 Generated constants (`:lib:generateConstants`)
 
@@ -1461,7 +1460,6 @@ The step-by-step checklist for each milestone is [PLAN-STEPS.md](PLAN-STEPS.md).
 | L4 | No H.264/AV1 encoders | WebM/VP8 only | accept |
 | L5 | Red Hat: direct qemu-kvm and TCG unsupported | no vendor support | accept for test infrastructure |
 | R1 | Rocky RPMs on UBI could conflict in future point releases | build break | pinned `${ROCKY_RELEASE}`; build-time guard; weekly scheduled CI |
-| R2 | **Licensing/redistribution** of an image mixing UBI with Rocky/EPEL content | may block publishing images publicly | **Facts gathered 2026-10-18 (not legal advice):** <ul><li>The `ubi9/ubi:9.8` image contains no `/licenses` directory; it carries the EULA as the label `com.redhat.license_terms=https://www.redhat.com/en/about/red-hat-end-user-license-agreements#UBI` **[V]**.</li><li>UBI EULA (March 2019 text) §1 grants a perpetual licence to the UBI "Programs"; §2 permits distributing images that include the Red Hat trademark **but** "If you modify the Red Hat Universal Base Image(s), you must remove any Red Hat trademark(s) prior to any subsequent distribution", and requires the unmodified EULA to be included in all derived images.</li><li>Red Hat's UBI FAQ: "Can I add non-UBI RPMs to a UBI image and still redistribute the resultant container image on a non-Red Hat platform?" → "**No**, only Red Hat packages assigned to the UBI EULA can be redistributed"; "Can I add non-UBI packages if something is missing from UBI?" → "Yes, but not if you want to freely redistribute the images." Distribution to any registry is otherwise allowed.</li><li>Rocky Linux: project additions under BSD-3-Clause, components under their own FOSS licences; packages themselves are redistributable; the Rocky name/logo need written permission beyond compatibility statements.</li><li>EPEL: 100 % FLOSS, Fedora packaging guidelines, freely redistributable.</li></ul> **Consequence:** the runner image as designed (UBI + Rocky QEMU + EPEL tini) is redistributable as far as Rocky/EPEL are concerned, but Red Hat's own FAQ says it is **not** redistributable under the UBI EULA, and any modified UBI image must drop Red Hat trademarks. **Decision (2026-10-18):** R2 stands because it is an enterprise policy (only Red Hat-family base images). Images are distributed **only within the organisation** through a private registry (`${IMAGE_REGISTRY}` must be private); they are never pushed to a public registry. UBI 9.8 ships no EULA file; it references the EULA through the image label `com.redhat.license_terms` **[V]**, which derived images inherit (§6.4 check 11 verifies it is still there). Whether that satisfies EULA §2's "include this unmodified EULA" for internal sharing, or whether the EULA text should be vendored into `/licenses/`, is part of the residual question below. Residual question for the policy owner, not for the implementer: whether intra-organisation sharing of a *modified* UBI image counts as "distribution" under EULA §2's trademark-removal sentence; until answered, the image makes no Red Hat support claims and adds no Red Hat branding of its own |
 | R3 | SELinux-enforcing hosts (Fedora/RHEL): `:z` relabel, `container_use_devices` for `/dev/kvm` | untestable on GitHub runners (AppArmor) | acceptance run on a Fedora/RHEL host before 1.0 [U] |
 | R4 | `/dev/kvm` 0660 hosts on Podman < 5.7 | needs user config | §9.6 detection and message [V] |
 | R5 | UEFI firmware paths | — | T22 |
@@ -1481,10 +1479,9 @@ The step-by-step checklist for each milestone is [PLAN-STEPS.md](PLAN-STEPS.md).
 1. §0 values are examples; replace them at adoption.
 2. `${ASSERTJ_VERSION}` was not checked against release pages; the other versions in §0 were checked on 2026-10-18. Use the current versions when adopting.
 3. Maximum screens = 4 and default hot-plug ports = 4 are design choices; only 2 screens and 4 ports were exercised (T6 exercises 4 screens).
-7. JUnit tags cannot be set dynamically through a meta-annotation, so `@Requirement` does not create JUnit tags; this is by design (REQUIREMENTS.md §3.1).
 4. `${ART_JUNIT}` is optional.
-5. Publishing images publicly depends on R2.
-8. **The Maven publishing destination is undecided** (Maven Central / GitHub Packages / internal). The plan configures `maven-publish` for `publishToMavenLocal` only; PLAN-STEPS.md step 6.7 is a placeholder until the decision is made.
+5. JUnit tags cannot be set dynamically through a meta-annotation, so `@Requirement` does not create JUnit tags; this is by design (REQUIREMENTS.md §3.1).
+6. **The Maven publishing destination is undecided** (Maven Central / GitHub Packages / internal). The plan configures `maven-publish` for `publishToMavenLocal` only; PLAN-STEPS.md step 6.7 is a placeholder until the decision is made.
 
 ---
 
@@ -1540,7 +1537,6 @@ All on branch `claude/vm-testcontainer-plan-lqhfa6` of this repository (PR #9).
 - **Rules that matter** (§1 a–l): `tini`; `incremental=false`; validate recordings by file; `force-shared`; unwrap `ContainerLaunchException` in `start()`; guest RPC filter **and** SELinux permissive domain; the keep-groups **annotation**, never `GroupAdd`; internal QMP socket; builder beats overrides; in-JVM lock beside the file lock; `PublishAllPorts=false`.
 - **Verification:** 122 requirement stories (3 retired) in REQUIREMENTS.md, each with evidence attached to a per-job Allure report; the build enforces that every test names the requirement it proves.
 - **Open:**
-  - publishing/licensing of the mixed image (R2);
   - an SELinux-host acceptance run (R3);
   - UEFI paths (T22).
 - **Adoption:** edit **§0 only**.

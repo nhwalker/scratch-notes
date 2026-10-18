@@ -210,3 +210,46 @@ Notes:
 
 - `catatonit` (Rocky CRB) and `dumb-init` (EPEL) are alternatives to `tini`.
 - Under `force-shared`, the exclusive `rfbsrc` client itself was disconnected during negotiation rather than downgraded to shared. That is unexplained, but harmless for the design: library users should connect as shared clients.
+
+---
+
+# CI results on GitHub-hosted runners (PR #9, 2026-10-18)
+
+Workflow: `.github/workflows/vm-testcontainer-spikes.yml`. Driver: `ci_spikes.py`. Engine: **rootless Podman** started with `podman system service`.
+
+## Feature checks (`ci_spikes.py`)
+
+| Check | ubuntu-24.04 KVM (run 1) | ubuntu-26.04 KVM (run 2) | ubuntu-24.04 TCG (run 2) |
+|-------|--------------------------|--------------------------|--------------------------|
+| accel (`query-kvm`) | enabled | enabled | disabled (TCG) |
+| QGA ready after container start | 12.1 s | 10.9 s | 46.7 s (run 1: 66.5 s) |
+| seed done (`dnf install alsa-utils`) | ~102 s | 45.5 s (DNF_RC=0) | 322.6 s (DNF_RC=0) |
+| exec (exit code, stdout, stderr) | PASS | PASS | PASS |
+| file copy 50 MB put / get | 20.2 / 46.3 MB/s | 21.4 / 30.7 MB/s | 2.8 / 6.6 MB/s |
+| screenshot per head | 1280×800 / 640×480 | same | same |
+| send-key console login | PASS | PASS | PASS |
+| VNC through published port (RFB handshake from host) | PASS | PASS | PASS |
+| record 2 screens, 12 s | 11.8 s each, stop 106 ms | 11.9 s, stop 106 ms | 12.0 / 11.8 s, stop ~106 ms |
+| audio 1 kHz tone | RMS 11851, 1000 Hz | RMS 11850, 1000 Hz | RMS 11804, 1000 Hz |
+| USB storage hot-plug / unplug | 1.7 s / 0.1 s | 1.7 s / 0.1 s | 1.9 s / 0.1 s |
+| PCIe virtio-blk hot-plug / unplug | 0.4 s / 0.1 s | 0.3 s / 0.1 s | 0.5 s / 0.4 s |
+| PCIe NIC hot-plug / unplug | 0.3 s / 0.1 s | 0.3 s / 0.1 s | 0.3 s / 0.4 s |
+| CD insert / eject | 0.4 s / 0.4 s | 0.3 s / 1.7 s | 0.3 s / 0.4 s |
+| vCPU hot-plug | 2→3 in 0.4 s (auto-online) | 2→3 in 0.4 s | **XFAIL**: guest never sees the vCPU (also failed in the run 1 TCG job and in the local sandbox run) |
+| memory hot-plug +512 MiB | 0.4 s (auto-online) | 0.3 s | 0.6 s |
+
+## Testcontainers 2.0.5 → rootless Podman compat API (run 4, `run-scenario.sh`)
+
+The Podman service was started in a login session (`sudo -iu $USER`), so `kvm` is a supplementary group.
+
+| Variant | 4.9.3, 0666 | 4.9.3, 0660 | 4.9.3, 0660 + containers.conf | 5.7.0, 0666 | 5.7.0, 0660 | 5.7.0, 0660 + containers.conf |
+|---------|-------------|-------------|-------------------------------|-------------|-------------|-------------------------------|
+| `Devices=[/dev/kvm]` only | ok | EACCES | **ok** | ok | EACCES | **ok** |
+| + `GroupAdd=["keep-groups"]` | start fails | start fails | start fails | start fails | start fails | start fails |
+| + annotation `run.oci.keep_original_groups=1` (API) | ok | **EACCES** (ignored) | ok | ok | **ok** | ok |
+| + `GroupAdd=[<kvm gid>]` | ok | EACCES | ok | ok | EACCES | ok |
+| `Init=true` → PID 1 | podman-init | podman-init | podman-init | podman-init | podman-init | podman-init |
+| read-only file bind | enforced | enforced | enforced | enforced | enforced | enforced |
+| containerDisk extraction (`copyArchiveFromContainer`) | byte-exact | byte-exact | byte-exact | byte-exact | byte-exact | byte-exact |
+
+Note: in run 2 the 0660 scenarios used `sg kvm`, which makes `kvm` the *primary* group. keep-groups does not preserve a primary group, so every 0660 variant failed on 5.7.0 in that run. That was a harness artifact, fixed in run 4.

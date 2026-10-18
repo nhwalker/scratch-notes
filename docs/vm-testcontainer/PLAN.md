@@ -1,768 +1,1114 @@
-# VM Testcontainer — Design & Implementation Plan
+# QEMU VM Testcontainer: Implementation Plan
 
-> Status: **Plan / proposal** — nothing implemented yet.
-> Scope: **x86-64 only** (host and guest).
-> Date: 2026-10-18
+> **Audience:** the agent (or engineer) who will implement this module, in a different repository.
+> **Status:** final plan. Every behaviour marked **[V]** was verified by an experiment in this repo (see §17 for evidence).
+> **Scope:** x86-64 hosts and Linux guests only.
 
 ---
 
-## BLUF (Bottom Line Up Front)
+## 0. Project parameters (the ONLY place to retarget names)
 
-- **What:** A Java Testcontainers module (`QemuVmContainer`) that starts one QEMU VM inside a Podman container.
-  - Java drives the VM over **QMP**, the QEMU control protocol. QMP covers screenshots, audio capture and hot-plugging.
-  - Java drives the guest OS over **QGA**, the QEMU guest agent. QGA covers running commands and copying files.
-- **KVM:** Uses `/dev/kvm` when the host exposes it. Otherwise it falls back to software emulation (TCG). TCG has been **verified to work** with the RHEL/Rocky 9.8 `qemu-kvm` build.
-- **Biggest packaging fact:** UBI 9 repos contain **no QEMU packages at all**.
-  - UBI 9.8 stays the base image, as required.
-  - `qemu-kvm`, `qemu-img` and the PulseAudio audio module come from the **Rocky 9.8** AppStream (the fallback repo).
-  - `ffmpeg-free` (for screen recording) comes from **EPEL 9**.
-  - Mixing Rocky packages onto a UBI base is the top risk. Phase 0 tests it in a spike before anything else is built.
-- **What the RHEL QEMU build allows and doesn't:**
-  - There is no SPICE and no `usb-audio`.
-  - VNC, PNG screendump, Intel HDA audio, the `wav` capture backend and `wavcapture` are all present and were verified in a test.
-- **VM image supply — recommendation:** a `VmImage` abstraction that always reduces to **a local, read-only base disk file**.
-  - That file is bind-mounted into the container. The container creates a **throwaway qcow2 overlay** on top of it, so the base image is never modified.
-  - Supported sources, in priority order:
-    1. A host file path.
-    2. An HTTP(S) URL with checksum, downloaded into a local cache.
-    3. An OCI "containerDisk" image (KubeVirt convention) that is pulled and extracted into the same cache.
-  - Baking the disk into the container image is supported as a secondary option, mainly for CI.
-- **Guest image requirement:** the guest must run `qemu-guest-agent` with `guest-exec` and `guest-file-*` **allowed**.
-  - RHEL/Rocky guests **block these by default** through an allow-list in `/etc/sysconfig/qemu-ga`.
+Every other section refers to these parameters by name, for example `${GROUP_ID}`. To adopt the plan, change the **Value** column here. Do not hard-code any of these values elsewhere, in the plan or in the implementation. In the implementation, each of them lives in exactly one place: the Gradle properties file or the constants class named in the *Lives in* column.
+
+| Parameter | Example value | Meaning | Lives in (implementation) |
+|-----------|---------------|---------|---------------------------|
+| `${GROUP_ID}` | `io.github.nhwalker` | Maven group ID for every published artifact | `gradle.properties` → `group` |
+| `${VERSION}` | `0.1.0-SNAPSHOT` | Project version (artifacts **and** image tags) | `gradle.properties` → `version` |
+| `${ROOT_PROJECT}` | `vm-testcontainer` | Gradle root project name / repo directory | `settings.gradle` |
+| `${ART_LIB}` | `vm-testcontainer` | Artifact ID of the Java library (the Testcontainers module) | `lib/build.gradle` |
+| `${ART_JUNIT}` | `vm-testcontainer-junit5` | Artifact ID of the optional JUnit 5 extension | `junit5/build.gradle` |
+| `${BASE_PACKAGE}` | `io.github.nhwalker.vmtestcontainer` | Root Java package | source tree |
+| `${IMAGE_REGISTRY}` | `ghcr.io/nhwalker` | Registry/namespace that runner and guest images are pushed to | `gradle.properties` → `imageRegistry` |
+| `${IMAGE_RUNNER}` | `${IMAGE_REGISTRY}/vmtc-runner` | Runner image repository (tags in §6.4) | `gradle.properties` → `imageRunner` |
+| `${IMAGE_GUEST}` | `${IMAGE_REGISTRY}/vmtc-guest-rocky9` | Reference guest containerDisk repository | `gradle.properties` → `imageGuest` |
+| `${LABEL_PREFIX}` | `io.github.nhwalker.vmtc` | Prefix for OCI labels the library sets on containers | `VmtcConstants.LABEL_PREFIX` |
+| `${SYSPROP_PREFIX}` | `vmtc` | Prefix for JVM system properties (`vmtc.kvm`, …) | `VmtcConstants.SYSPROP_PREFIX` |
+| `${ENV_PREFIX}` | `VMTC_` | Prefix for host environment variables (`VMTC_KVM`, …) | `VmtcConstants.ENV_PREFIX` |
+| `${CACHE_DIR_NAME}` | `vm-testcontainer` | Directory name under `$XDG_CACHE_HOME` (default `~/.cache`) | `VmtcConstants.CACHE_DIR_NAME` |
+| `${JAVA_RELEASE}` | `21` | Java language/bytecode level | `gradle.properties` → `javaRelease` |
+| `${GRADLE_VERSION}` | `9.1.0` | Gradle wrapper version (verify it is current when adopting) | `gradle/wrapper/gradle-wrapper.properties` |
+| `${TESTCONTAINERS_VERSION}` | `2.0.5` | `org.testcontainers:testcontainers` version **[V]** (latest on Maven Central on 2026-10-18) | `gradle/libs.versions.toml` |
+| `${JUNIT_VERSION}` | `5.12.2` | JUnit BOM version | `gradle/libs.versions.toml` |
+| `${JACKSON_VERSION}` | `2.20.0` | Jackson databind version (verify it is current when adopting) | `gradle/libs.versions.toml` |
+| `${UBI_IMAGE}` | `registry.access.redhat.com/ubi9/ubi:9.8` | Runner base image **[V]** | `images/runner/Containerfile` `ARG` |
+| `${ROCKY_RELEASE}` | `9.8` | Rocky fallback repo release pin **[V]** | `images/runner/repos/rocky.repo` |
+| `${GUEST_BASE_URL}` | `https://dl.rockylinux.org/pub/rocky/9/images/x86_64/Rocky-9-GenericCloud-Base-9.8-20260525.0.x86_64.qcow2` | Reference guest source image **[V]** | `images/guest/guest.properties` |
+| `${GUEST_BASE_SHA256}` | `92c206cc6f790c61583247eefe87890f8828420662c17cacf247cec78ab4eec8` | SHA-256 of the image above **[V]** | `images/guest/guest.properties` |
+
+**Rule for the implementer:**
+- Java code reads the image names through `VmtcConstants.defaultRunnerImage(Variant)`. That method is generated at build time from `gradle.properties`; see §11.3.
+- Scripts and the Containerfile receive the values as build arguments.
+- A `grep` for any example value outside the files in the *Lives in* column must return nothing. CI enforces this (§12.3).
+
+---
+
+## 1. BLUF (Bottom Line Up Front)
+
+**What it is:** a Testcontainers module, `${ART_LIB}`, whose `QemuVmContainer` runs **one QEMU VM per Podman container** on a UBI 9.8 runner image.
+
+- **With `/dev/kvm`:** it uses KVM, and the guest agent was ready about 11 s after container start on CI.
+- **Without it:** it falls back to TCG (software emulation), which is 5–10× slower but functional.
+
+**Every requirement is verified end to end** with a Rocky 9.8 guest on GitHub-hosted runners under KVM and under TCG:
+
+| Capability | How it works |
+|------------|--------------|
+| Run commands, copy files | QEMU guest agent (QGA) |
+| Screenshots, keyboard, hot-plug | QEMU monitor protocol (QMP) |
+| One VNC server per screen | exposed to library users |
+| Screen recording | one WebM (VP8) per screen, recorded from VNC with GStreamer `rfbsrc` |
+| Audio recording | separate WAV file, via QEMU `wavcapture` |
+| Hot-plug | USB storage/HID, PCIe disk, PCIe NIC, CD media change, memory; CPU under KVM only |
+
+**Packaging:**
+- UBI repos have **no QEMU at all**. QEMU and `gstreamer1-plugins-good` come from **Rocky 9.8**, which is pinned and allowed only as a fallback.
+- `tini` comes from **EPEL**.
+- Everything else comes from UBI.
+
+**VM image supply:** every source resolves to **a read-only base disk file in a host cache**. It is bind-mounted into the container, and the container writes to a throwaway qcow2 overlay.
+
+| Source | API |
+|--------|-----|
+| Host path | `VmImage.fromPath` |
+| URL + SHA-256 | `VmImage.fromUrl` |
+| containerDisk OCI image, extracted through the Docker API | `VmImage.fromContainerDisk` **[V]** |
+| Disk baked into a derived runner image | `VmImage.baked()` |
+
+**Things the implementer must not get wrong:**
+
+| # | Rule | Why |
+|---|------|-----|
+| a | Run `tini` as PID 1 | QEMU does not reap children, so recorders become zombies otherwise |
+| b | Use `rfbsrc incremental=false` | Static screens otherwise produce no frames |
+| c | Judge a recording by validating the file | `gst-launch` exits 1 after a normal SIGINT stop |
+| d | Use VNC `share=force-shared` | An exclusive VNC client otherwise kills recorders |
+| e | Set VNC passwords per display with `set_password` | `change-vnc-password` only covers the default display |
+| f | Guests need the QGA RPC filter relaxed **and** `semanage permissive -a virt_qemu_ga_t` | SELinux otherwise blocks guest-exec |
+| g | Secondary screens stay dark until the guest modesets them | Expected behaviour; plan for it |
+| h | `/dev/kvm` passthrough through Testcontainers works when the host device is `0666` (systemd default). For a group-restricted `0660` device, set the per-container annotation `run.oci.keep_original_groups=1` (works on Podman 5.7). On Podman 4.9, use the same annotation in `containers.conf` instead (§9.6) | Group access does not cross the compat API by default |
 
 ---
 
 ## Table of contents
 
-1. [Requirements](#1-requirements)
-2. [Verified facts this plan relies on](#2-verified-facts-this-plan-relies-on)
-3. [Architecture](#3-architecture)
-4. [Container image design](#4-container-image-design)
-5. [QEMU launch configuration](#5-qemu-launch-configuration)
-6. [Feature design (per requirement)](#6-feature-design-per-requirement)
-7. [VM image supply — options & recommendation](#7-vm-image-supply--options--recommendation)
-8. [Guest image requirements](#8-guest-image-requirements)
-9. [Java API sketch](#9-java-api-sketch)
-10. [Podman / Testcontainers integration](#10-podman--testcontainers-integration)
-11. [Project layout](#11-project-layout)
-12. [Testing strategy](#12-testing-strategy)
-13. [Phased delivery plan](#13-phased-delivery-plan)
-14. [Risks & open questions](#14-risks--open-questions)
-15. [In Summary](#15-in-summary)
+0. Project parameters
+1. BLUF
+2. Requirements and decisions
+3. Verified facts
+4. Architecture
+5. Repository and module layout (Gradle)
+6. Runner container image
+7. In-container scripts (entrypoint, recorder)
+8. QEMU configuration
+9. Java library design
+10. Guest contract and reference guest image
+11. Build (Gradle) details
+12. CI
+13. Test plan and acceptance criteria
+14. Implementation milestones
+15. Limits, risks, open items
+16. Assumptions to confirm
+17. Evidence index
+18. In Summary
 
 ---
 
-## 1. Requirements
+## 2. Requirements and decisions
 
-| # | Requirement | Covered in |
-|---|-------------|-----------|
-| R1 | Container engine is **Podman** | §10 |
-| R2 | Container images based on **UBI 9.8** | §4 |
-| R3 | Run commands in the VM | §6.1 |
-| R4 | Copy files to and from the VM | §6.2 |
-| R5 | Run QEMU images (qcow2, raw) | §5, §7 |
-| R6 | Screenshots | §6.3 |
-| R7 | Audio recordings | §6.4 |
-| R8 | Screen recordings | §6.5 |
-| R9 | Simulate hot-plugging devices | §6.6 |
-| R10 | Repos: UBI first, then **EPEL**, with **Rocky** as fallback | §4 |
-| R11 | Use `/dev/kvm` when available; work without it (slower) | §5.1 |
-| R12 | x86-64 only | throughout |
-| TBD | Best way to supply the VM image | §7 |
-
----
-
-## 2. Verified facts this plan relies on
-
-A research pass checked these facts against primary sources and an actual test run on 2026-10-18.
-
-The test ran in a Rocky Linux 9.8 container with `qemu-kvm-core-10.1.0-17.el9_8.5` installed and **no `/dev/kvm`**.
-
-Legend: **V** = verified (source or test), **L** = likely but not tested, **U** = unverified.
-
-| Topic | Fact | Conf. |
-|-------|------|-------|
-| RHEL 9.8 | GA 2026-05-19 | V |
-| UBI 9.8 tags | `registry.access.redhat.com/ubi9/{ubi,ubi-minimal,ubi-init,ubi-micro}:9.8` all resolve | V |
-| QEMU in UBI repos | **None.** The UBI baseos, appstream and codeready-builder repos have no `qemu-*` package | V |
-| QEMU in Rocky 9.8 AppStream | `qemu-kvm-core`, `qemu-img`, `qemu-guest-agent`, `qemu-kvm-audio-pa`, version 10.1.0-17.el9_8.x | V |
-| QEMU version | 10.1.0 | V |
-| Binary path | `/usr/libexec/qemu-kvm`; there is no `qemu-system-x86_64` | V |
-| TCG (no KVM) | The spec builds with `--enable-tcg`. A test with `-accel tcg -M q35` reached `running` | V |
-| Red Hat support | The binary prints "Direct use of qemu-kvm from the command line is not supported by Red Hat". It works, but it is unsupported | V |
-| Default CPU | `qemu64` prints a deprecation warning, so pass `-cpu max` (TCG) or `-cpu host` (KVM) | V |
-| Display | `-display none` only (no GTK/SDL). **VNC is enabled** | V |
-| SPICE | Removed in RHEL 9 | V |
-| Screendump PNG | QMP `screendump` with `"format":"png"` produced a valid PNG | V |
-| Audio backends | `none` and `wav` are built in; `pa` comes from the `qemu-kvm-audio-pa` subpackage; no alsa, pipewire or spice | V |
-| `dbus` audio | Not packaged in Rocky 9.8 | V |
-| `wavcapture` HMP command | Works through QMP `human-monitor-command` and produced a valid WAV file | V |
-| Sound devices | `ich9-intel-hda`, `intel-hda`, `hda-duplex`, `hda-output`, `hda-micro` | V |
-| `usb-audio` | **Not available** (RHEL device config) | V |
-| `virtio-sound` | Not available (`virtio-sound-pci` absent from `-device help`) | V |
-| EPEL 9 QEMU | No full QEMU, only `qemu-sanity-check` | V |
-| EPEL 9 ffmpeg | `ffmpeg-free` 7.1.5 is available; it probably needs CRB for dependencies | V / L |
-| QGA commands | `guest-exec`, `guest-exec-status`, `guest-file-open/read/write/close` exist in 10.1 | V |
-| QGA limits | `guest-file-read` reads at most 48 MiB per call. `guest-exec` captures at most 16 MiB per stream, then sets a `*-truncated` flag | V |
-| QGA default on RHEL/Rocky guests | `/etc/sysconfig/qemu-ga` has an allow-list that **omits guest-exec and guest-file-\*** | V |
-| Testcontainers + Podman | Set `DOCKER_HOST=unix://$XDG_RUNTIME_DIR/podman/podman.sock`; rootless needs `TESTCONTAINERS_RYUK_DISABLED=true` | V |
-| Testcontainers latest | 2.0.5 (2026-04-20) | V |
-| Rootless `--device /dev/kvm` | A bind of the host device; the user must already have access. SELinux hosts may need `container_use_devices=true` | V |
-| `/dev/kvm` default mode | `0666` with systemd defaults, so usually no group workaround is needed | V (default) / L (per distro) |
-| `--group-add keep-groups` | crun only; "not available for remote commands" | V |
-| `keep-groups` through the compat API | Not confirmed | U |
-| Podman `--mount type=image` | Since 2.2.0 | V |
-| Podman `--mount type=artifact` | Since 5.5.0; stable artifacts since 5.6.0 | V |
-| Podman in Rocky 9.8 | 5.8.x | V |
-| KubeVirt containerDisk | Disk goes in `/disk/` inside the image, readable by UID 107; qcow2 is recommended | V |
-| **Spike #1: UBI 9.8 + EPEL + Rocky 9.8 install** | **PASS.** No UBI package replaced; no `rocky-release` installed; `rpm -Va` clean. See `vm-testcontainer/container/spike/RESULTS.md` | V |
-| Default machine type | `pc-i440fx-rhel7.6.0`, which is deprecated, so always pass `-M q35` | V |
-| `virtio-vga` / `virtio-sound-pci` | **Not present** in the RHEL build; `VGA` and `bochs-display` are | V |
-| Netdev | `user` (slirp) and `passt` both available | V |
-| ffmpeg-free encoders | VP8, VP9, AV1, MJPEG, Opus and Vorbis present; H.264 is a stub (`noopenh264`) | V |
-| **Spike #7: Rocky 9.8 GenericCloud guest under TCG** | QGA answered **~85 s** after QEMU start (4-vCPU sandbox, no KVM). GenericCloud **ships qemu-guest-agent preinstalled and enabled**, plus `kernel-modules` (HDA driver); `alsa-utils` is not included | V |
-| QGA error for blocked RPC | Class `CommandNotFound`, desc "Command guest-exec has been disabled: the command is not allowed" | V |
-| **QGA + SELinux on RHEL-family guests** | `guest-exec` children run in the **`virt_qemu_ga_t`** domain (enforcing). They can't read `/usr/share/alsa`, `/lib/modules` or run `journalctl`. Boolean `virt_qemu_ga_run_unconfined=on` did **not** change that. `semanage permissive -a virt_qemu_ga_t` **fixed it** | V |
-| **Spike #4: `wavcapture` with `-audiodev none`** | **PASS.** A 1 kHz guest tone was captured (44.1 kHz/16-bit/stereo, RMS ~7400, ~1000 Hz measured). Guest mixer needed `amixer sset Master/PCM unmute` first; before that, all samples were zero | V |
-| Screen recording (screendump loop → ffmpeg VP9) | Works: 33 frames, 1280×800 VP9/WebM in 8 s at 4 fps; screendump ~33 ms avg (TCG) | V |
-| Keyboard input | QMP `send-key` typed on the VGA console (login + shell commands) | V |
-| USB hot-plug | `blockdev-add` + `device_add usb-storage,bus=xhci.0` → guest `sda` (usb); `device_del` + `blockdev-del` → removed | V |
+| # | Requirement / decision | Where |
+|---|------------------------|-------|
+| R1 | Container engine **Podman** (rootless first-class; rootful works) | §9.6, §12 |
+| R2 | Images based on **UBI 9.8** | §6 |
+| R3 | Run commands in the VM | §9.4 |
+| R4 | Copy files to and from the VM | §9.5 |
+| R5 | Run QEMU images (qcow2, raw) | §8, §9.3 |
+| R6 | Screenshots (per screen) | §9.7 |
+| R7 | Audio recording, as **separate WAV** files | §9.9 |
+| R8 | Screen recording: **GStreamer recording each screen's VNC, one video per screen** | §7.2, §9.8 |
+| R9 | **VNC for display output, exposed to library users** | §8.3, §9.7 |
+| R10 | Hot-plug simulation | §9.10 |
+| R11 | Repos: UBI first, then EPEL, with Rocky as fallback | §6.2 |
+| R12 | Use `/dev/kvm` when available; work without it | §8.2, §9.6 |
+| D1 | x86-64 hosts and guests only | — |
+| D2 | **Linux guests only** | §10 |
+| D3 | Reference test guest: **Rocky Linux 9** | §10.3 |
+| D4 | Build tool: **Gradle** | §5, §11 |
+| D5 | Screens: **1..N, configurable** (default 1, max 4) | §8.3 |
+| D6 | Image variants: **slim** (no GStreamer) and **media** (with GStreamer) | §6.4 |
+| D7 | Guests with SELinux: `semanage permissive -a virt_qemu_ga_t` | §10.1 |
 
 ---
 
-## 3. Architecture
+## 3. Verified facts
+
+Legend:
+- **[V]** = verified by an experiment in this repo. Evidence is listed in §17.
+- **[D]** = taken from upstream documentation or source.
+- **[U]** = not verified; the plan accounts for it.
+
+### 3.1 Packaging (runner image)
+
+| Fact | Status |
+|------|--------|
+| `ubi9/ubi:9.8` exists. RHEL 9.8 GA was 2026-05-19 | [V] |
+| UBI 9 baseos, appstream and codeready-builder repos contain **no** `qemu-*` package | [V] |
+| Rocky 9.8 AppStream provides `qemu-kvm-core`, `qemu-img` and `qemu-kvm-common` (10.1.0-17.el9_8.5), plus `edk2-ovmf` and `seabios-bin`. Installing them onto UBI 9.8 replaced **no** UBI package, installed no `rocky-release`, and `rpm -Va` was clean | [V] |
+| UBI AppStream provides `gstreamer1`, `gstreamer1-plugins-base` and `gstreamer1-plugins-bad-free` (contains `rfbsrc`). **Rocky-only:** `gstreamer1-plugins-good` (`vp8enc`, `webmmux`, `matroskamux`) and `gstreamer1-plugins-base-tools` (`gst-discoverer-1.0`). All are version 1.22.12 | [V] |
+| Not available anywhere in the repo set: `x264enc`, `openh264enc`, `av1enc` | [V] |
+| EPEL 9 provides `tini` 0.19.0 (also `dumb-init`). Rocky CRB provides `catatonit` | [V] |
+| Image build with rootless Podman on a GitHub runner took about 51 s; the media variant is 734 MB uncompressed | [V] |
+
+### 3.2 QEMU (RHEL build, `/usr/libexec/qemu-kvm`)
+
+| Fact | Status |
+|------|--------|
+| The binary is `/usr/libexec/qemu-kvm`; there is no `qemu-system-x86_64` | [V] |
+| Accelerators: `kvm`, `tcg`, `mshv`. TCG works without `/dev/kvm` | [V] |
+| The default machine type is deprecated, so **always pass `-M q35`** | [V] |
+| Display devices: `VGA`, `secondary-vga`, `bochs-display`, `cirrus-vga`. **No `virtio-vga`** | [V] |
+| Sound: `ich9-intel-hda` + `hda-duplex`. **No `usb-audio` and no `virtio-sound-pci`** | [V] |
+| Audio backends compiled in: `none`, `wav` (`pa` comes from a separate subpackage and is not used) | [V] |
+| `-netdev user` (slirp) and `passt` are both available | [V] |
+| Hot-plug devices present: `qemu-xhci`, `usb-storage`, `usb-kbd`, `usb-tablet`, `usb-mouse`, `pcie-root-port`, `virtio-blk-pci`, `virtio-net-pci`, `virtio-scsi-pci`, `scsi-cd`, `pc-dimm` | [V] |
+| `-vnc <addr>:<n>,id=vnc<n>,display=video<n>` gives one VNC server per display device; `query-vnc-servers` confirms the mapping | [V] |
+| `screendump {device: "video<n>", format: "png"}` captures the screen of that display | [V] |
+| `share=force-shared` keeps recorders connected while another client connects | [V] |
+| `password=on` + `set_password {protocol: vnc, password, display: vnc<n>}` enforces VNC auth; a wrong password is rejected | [V] |
+| `wavcapture <path> <audiodev>` / `stopcapture <n>` (HMP via QMP) works with `-audiodev none` and recorded a 1 kHz tone correctly | [V] |
+| Red Hat calls direct `qemu-kvm` use and TCG "unsupported". Acceptable for test infrastructure | [V] (binary message) |
+
+### 3.3 Timings measured on GitHub-hosted runners (4 vCPU, 16 GB)
+
+| Measurement | KVM (ubuntu-24.04) | KVM (ubuntu-26.04) | TCG (ubuntu-24.04) |
+|-------------|-------------------|--------------------|--------------------|
+| Container start → QGA ready | 12.1 s | 10.9 s | 46.7–66.5 s (2 runs) |
+| Seed with `dnf install alsa-utils` done | about 100 s | 45.5 s | 322–481 s |
+| QGA file write 50 MB | 2.5 s (20 MB/s) | 2.3 s (21 MB/s) | 18.0–36.4 s (1.4–2.8 MB/s) |
+| QGA file read 50 MB | 1.1 s (46 MB/s) | 1.6 s (31 MB/s) | 7.5–10.5 s (4.8–6.6 MB/s) |
+| USB stick visible in guest | 1.7 s | — | 3.2 s |
+| PCIe disk / NIC visible | 0.3–0.4 s | — | 0.4 s |
+| vCPU hot-plug | 0.4 s, auto-online | pass | **guest never sees the vCPU** (XFAIL, 3/3 runs) |
+| Memory hot-plug +512 MiB | 0.4 s, auto-online | pass | 1.7 s |
+| Recorder stop latency | about 106 ms | — | about 108 ms |
+
+### 3.4 Guest (Rocky 9.8 GenericCloud)
+
+| Fact | Status |
+|------|--------|
+| The image ships `qemu-guest-agent` (enabled), `cloud-init` and `kernel-modules` (HDA driver) | [V] |
+| `/etc/sysconfig/qemu-ga` sets `FILTER_RPC_ARGS="--allow-rpcs=..."`, which **omits** `guest-exec*` and `guest-file-*`. The error returned is class `CommandNotFound`, desc "Command guest-exec has been disabled: the command is not allowed" | [V] |
+| guest-exec children run as SELinux domain `virt_qemu_ga_t`, which denies ordinary files (`/usr/share/alsa`, `/lib/modules`, `journalctl`) | [V] |
+| `virt_qemu_ga_run_unconfined=on` does **not** help. `semanage permissive -a virt_qemu_ga_t` **does**, and the rest of the guest stays Enforcing | [V] |
+| The HDA mixer must be unmuted (`amixer -c 0 sset Master 90% unmute`). There may be no `PCM` control, so ignore its failure | [V] |
+| Every bochs-drm head appears as `/dev/fbN` / `cardN`. A text console only drives head 0. Heads 1..N-1 report "Guest has not initialized the display (yet)" at 640×480 until a modeset (`FBIOPUT_VSCREENINFO` with `FB_ACTIVATE_FORCE`, or a desktop session) | [V] |
+| Memory and CPU hot-add are auto-onlined by the guest (udev). PCIe unplug and USB unplug complete in ≤ 0.2 s | [V] |
+
+### 3.5 GStreamer VNC recording
+
+| Fact | Status |
+|------|--------|
+| The pipeline in §7.2 records each VNC display concurrently; the duration matches wall clock within 0.3 s | [V] |
+| `incremental=true` (the default) **blocks with no frames** on a static screen | [V] |
+| With `incremental=false`, QEMU answers on its adaptive refresh timer (≈0.1–0.7 s idle), and `videorate` fills the gaps | [V] |
+| SIGINT → `-e` EOS → the file is finalized in about 110 ms. **The exit code is 1, with a benign "Error on setup VNC connection" line** | [V] |
+| `rfbsrc password=...` works with QEMU VNC auth | [V] |
+
+### 3.6 Podman / Testcontainers (compat API)
+
+| Fact | Status |
+|------|--------|
+| Testcontainers 2.0.5 works against rootless Podman 4.9.3 (ubuntu-24.04) and 5.7.0 (ubuntu-26.04) via `DOCKER_HOST=unix://…/podman.sock` with `TESTCONTAINERS_RYUK_DISABLED=true` | [V] |
+| `HostConfig.Devices=[/dev/kvm]` works when the host `/dev/kvm` is `0666` (both versions) | [V] |
+| `HostConfig.GroupAdd=["keep-groups"]` through the compat API **fails container start** (both versions) | [V] |
+| `HostConfig.Init=true` → PID 1 is `podman-init` | [V] |
+| A read-only file bind is enforced (writes fail with EROFS) | [V] |
+| containerDisk extraction (`createContainerCmd` + `copyArchiveFromContainerCmd`) is byte-exact on Docker 29.8, Podman 4.9.3 and Podman 5.7.0 | [V] |
+| With `/dev/kvm` `0660 root:kvm` and the user in `kvm`, through the compat API: <ul><li>device-only → EACCES</li><li>annotation `run.oci.keep_original_groups=1` in `HostConfig` → **works on 5.7.0**, EACCES on 4.9.3 (annotation ignored)</li><li>the same annotation in `containers.conf` → **works on both**</li></ul> | [V] |
+
+---
+
+## 4. Architecture
 
 ```
- ┌──────────────────────────── Host (x86-64 Linux) ──────────────────────────────┐
- │                                                                                │
- │  JUnit test ──► QemuVmContainer (Java, Testcontainers GenericContainer)        │
- │                    │  QmpClient ───────────── TCP (mapped port) ──┐            │
- │                    │  GuestAgentClient ────── TCP (mapped port) ──┤            │
- │                    │  VNC (optional, debug) ─ TCP (mapped port) ──┤            │
- │                    │  copyFileFromContainer (artifacts) ──────────┤            │
- │                    │                                              │            │
- │  VmImageCache  ~/.cache/qemu-testcontainer/<sha256>.qcow2 ─┐      │            │
- │                                                            │ro    │            │
- │  /dev/kvm (optional) ───────────────────────────────┐      │bind  │            │
- │                                                     ▼      ▼      ▼            │
- │  ┌──────────────── Podman container (UBI 9.8 + Rocky qemu-kvm) ───────────┐    │
- │  │  /vm/base/disk.img (ro)   /vm/run/overlay.qcow2 (rw, backing=base)      │    │
- │  │  /vm/out/  (screenshots, wav, webm, serial.log)                         │    │
- │  │                                                                         │    │
- │  │  vm-entrypoint.sh                                                       │    │
- │  │    └─ /usr/libexec/qemu-kvm  -accel kvm -accel tcg  -M q35 ...          │    │
- │  │         ├─ QMP   chardev socket  :4444                                  │    │
- │  │         ├─ QGA   virtio-serial ──► chardev socket :4445                 │    │
- │  │         ├─ VNC   :5900                                                  │    │
- │  │         ├─ serial console ──► /vm/out/serial.log                        │    │
- │  │         └─ audiodev (wav/none) + ich9-intel-hda + hda-duplex            │    │
- │  │  vm-recorder.sh (screendump loop ─► ffmpeg-free ─► webm)  [on demand]   │    │
- │  │                                                                         │    │
- │  │    ┌──────────── Guest VM ────────────┐                                 │    │
- │  │    │  qemu-guest-agent (exec/file ok) │                                 │    │
- │  │    └──────────────────────────────────┘                                 │    │
- │  └─────────────────────────────────────────────────────────────────────────┘    │
- └────────────────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────── Host (x86-64 Linux, Podman) ────────────────────────────────┐
+│                                                                                              │
+│  Test (JUnit 5) ──► QemuVmContainer  (${BASE_PACKAGE})                                        │
+│                      │ QmpClient ─────────── TCP 127.0.0.1:<mapped 4444> ─┐                  │
+│                      │ GuestAgentClient ──── TCP 127.0.0.1:<mapped 4445> ─┤                  │
+│  library users' VNC viewers ──────────────── TCP <bind>:<mapped 5900+i> ──┤                  │
+│                      │ execInContainer(vmtc-rec …), copyFileFromContainer ┤                  │
+│                      │                                                    │                  │
+│  ~/.cache/${CACHE_DIR_NAME}/images/<sha256>.<fmt>  ── ro bind ──┐         │                  │
+│  /dev/kvm (optional) ─────────────────────────── --device ──┐   │         │                  │
+│                                                              ▼   ▼         ▼                  │
+│  ┌─────────────── container: ${IMAGE_RUNNER}:${VERSION}-ubi9.8[-media] ───────────────┐      │
+│  │ PID 1 tini ─► vmtc-entrypoint ─► /usr/libexec/qemu-kvm -M q35 …                    │      │
+│  │   /vm/base/disk.img (ro)  /vm/run/overlay.qcow2  /vm/out/{serial.log,*.png,*.wav,*.webm}│  │
+│  │   QMP :4444   QGA chardev :4445 ◄─virtio-serial─► guest qemu-ga                    │      │
+│  │   VNC :5900+i per screen (share=force-shared[,password=on])                        │      │
+│  │   vmtc-rec start/stop ─► gst-launch rfbsrc ► vp8enc ► webmmux (media only)         │      │
+│  │   ┌───────────────── Guest (Linux) ─────────────────┐                              │      │
+│  │   │ qemu-ga (exec/file RPCs allowed, permissive SELinux domain)                    │      │
+│  │   └────────────────────────────────────────────────┘                              │      │
+│  └────────────────────────────────────────────────────────────────────────────────────┘      │
+└──────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-Design principles:
+Principles:
 
-1. **Container = one VM.** The container's lifecycle is the VM's lifecycle. This matches the Testcontainers model.
-2. **Java talks protocols, not shell.**
-   - QMP and QGA are JSON over a socket. Java implements both directly, without going through `podman exec`.
-   - This keeps calls fast and avoids quoting problems.
-   - `execInContainer` is used only for container-side helpers such as recorder start and stop.
-3. **Base disk is never written.** A qcow2 overlay is created per container start. Each test gets a fresh VM, and a cached base image is never corrupted.
-4. **TCP chardevs, not unix sockets, for host access.**
-   - Testcontainers already maps TCP ports. Bind-mounting a unix socket out of a rootless container runs into UID and SELinux problems.
-   - QMP and QGA are unauthenticated, so the mapped ports bind to `127.0.0.1` only. This is acceptable for test infrastructure.
+1. **One container = one VM.** The VM's lifecycle is the container's lifecycle.
+2. **Java speaks QMP and QGA directly over TCP** (JSON lines).
+   - `execInContainer` is used only for container-side helpers (`vmtc-rec`, `qemu-img`, `xorriso`).
+   - Files are moved with `copyFileToContainer` / `copyFileFromContainer`.
+3. **The base disk is never written.** Each container start creates a qcow2 overlay.
+4. **All published host ports bind to `127.0.0.1` by default.** VNC's bind address is configurable (§9.7).
 
 ---
 
-## 4. Container image design
-
-### 4.1 Base and repo layering (R2, R10)
+## 5. Repository and module layout (Gradle)
 
 ```
-registry.access.redhat.com/ubi9/ubi:9.8          ← base (R2)
-  repos (dnf priority, lower number = preferred):
-    priority=10  ubi-9-baseos / ubi-9-appstream / ubi-9-codeready-builder   (built in)
-    priority=20  epel-9                                                      (EPEL)
-    priority=90  rocky-9.8-baseos / rocky-9.8-appstream / rocky-9.8-crb      (fallback)
+${ROOT_PROJECT}/
+├─ settings.gradle                      rootProject.name = '${ROOT_PROJECT}'; include 'lib','junit5','images','it'
+├─ gradle.properties                    group, version, imageRegistry, imageRunner, imageGuest, javaRelease (§0)
+├─ gradle/libs.versions.toml            testcontainers, junit, jackson, commons-compress, slf4j
+├─ gradle/wrapper/…                     ${GRADLE_VERSION}
+├─ lib/                                 artifact ${ART_LIB}  (the Testcontainers module)
+│  ├─ build.gradle                      java-library, maven-publish, generateConstants task (§11.3)
+│  └─ src/main/java/${BASE_PACKAGE}/…   (§9.1 package list)
+│     src/test/java/…                   unit tests (no container engine needed)
+├─ junit5/                              artifact ${ART_JUNIT}: @VmTest extension: artifacts on failure (§9.13)
+├─ images/
+│  ├─ runner/
+│  │  ├─ Containerfile                  (§6.3)
+│  │  ├─ repos/epel.repo, repos/rocky.repo
+│  │  └─ scripts/vmtc-entrypoint, vmtc-rec, vmtc-fb-activate.py   (§7)
+│  ├─ guest/
+│  │  ├─ guest.properties               ${GUEST_BASE_URL}, ${GUEST_BASE_SHA256}
+│  │  ├─ customize.sh                   (§10.3), Containerfile.containerdisk
+│  │  └─ seed/ (cloud-init templates)   (§10.2)
+│  └─ build.gradle                      tasks: buildRunnerSlim, buildRunnerMedia, buildGuestDisk, push* (§11.2)
+└─ it/                                  integration tests against real Podman (§13); not published
 ```
-
-- **Base image choice:** use `ubi9/ubi:9.8`, the full variant with `dnf`.
-  - `ubi-minimal` uses `microdnf`, which has weaker repo-priority handling. That is **L**, untested.
-  - `ubi-init` (systemd) isn't needed; one supervisor script is enough.
-- **Pin Rocky to 9.8**, not the floating `9`, so its libraries match the UBI 9.8 base.
-  - Proposed baseurl: `https://dl.rockylinux.org/vault/rocky/9.8/...` once 9.8 is vaulted, or `pub/rocky/9.8/...` while it's current. The exact path is **U** and goes into the spike.
-- **Restrict what Rocky may supply** with `includepkgs=` or `excludepkgs=`.
-  - Exclude `rocky-release*`, `rocky-logos*` and anything that would replace `redhat-release`.
-  - Ideally allow only `qemu-*` plus the dependencies the spike shows are actually missing from UBI.
-- **GPG:** import the Rocky and EPEL keys with `rpm --import` and keep `gpgcheck=1`.
-- **Weak dependencies:** install with `--setopt=install_weak_deps=False` to keep the image small.
-
-### 4.2 Packages
-
-| Package | From | Purpose |
-|---------|------|---------|
-| `qemu-kvm-core` | Rocky AppStream | The emulator (`/usr/libexec/qemu-kvm`) |
-| `qemu-img` | Rocky AppStream | Creates the overlay; converts formats |
-| `qemu-kvm-audio-pa` | Rocky AppStream | *Omit.* Not needed for wav capture |
-| `edk2-ovmf` | Rocky AppStream (V) | UEFI firmware for UEFI guests |
-| `seabios-bin` | Rocky AppStream (V) | BIOS for legacy guests |
-| `ffmpeg-free` | EPEL (V); deps from UBI, Rocky AppStream and Rocky CRB (`ladspa`) | Screen recording encode; mux audio and video. Media image only |
-| `xorriso` | Rocky AppStream (V) | Build the cloud-init NoCloud seed ISO (§8) |
-| `jq`, `socat`, `passt` | UBI (V) | Helper scripts; passt is an alternative network backend |
-
-### 4.3 Image variants (published tags)
-
-| Image | Contents | Size target |
-|-------|----------|-------------|
-| `qemu-testcontainer-runner:<ver>-ubi9.8` | QEMU + helpers; **no** ffmpeg | small |
-| `qemu-testcontainer-runner:<ver>-ubi9.8-media` | + `ffmpeg-free` for screen recording | larger |
-
-Splitting the images keeps the common case (exec, copy, screenshot) small. The Java side checks for `ffmpeg` and reports a clear error if screen recording is requested on the slim image.
-
-**Decided:** slim + media, two images.
-
-### 4.4 Container entrypoint (`vm-entrypoint.sh`)
-
-The entrypoint takes its configuration from environment variables set by Java. Steps:
-
-1. Validate `/vm/base/disk.img` and detect its format with `qemu-img info --output=json`.
-2. Create the overlay: `qemu-img create -f qcow2 -F <fmt> -b /vm/base/disk.img /vm/run/overlay.qcow2 [size]`.
-3. Choose the accelerator:
-   - If `/dev/kvm` is present and writable, use `-accel kvm -cpu host`.
-   - Otherwise use `-accel tcg -cpu max` and log a warning.
-   - Java can force either mode with `VM_ACCEL=kvm|tcg|auto`.
-4. `exec` QEMU, so QEMU becomes PID 1's child or PID 1 itself and signals propagate.
-5. Print `QEMU_READY` once the QMP socket is listening. Java's wait strategy keys on this line.
 
 ---
 
-## 5. QEMU launch configuration
+## 6. Runner container image
 
-### 5.1 Baseline command (illustrative)
+### 6.1 Variants and tags
 
-```bash
-/usr/libexec/qemu-kvm \
-  -name testvm -nodefaults -no-user-config \
-  -machine q35 \
-  -accel kvm -accel tcg \                # QEMU tries in order; or chosen explicitly by entrypoint
-  -cpu host|max -smp ${VM_CPUS} -m ${VM_MEM_MB} \
-  -display none -vnc 0.0.0.0:0 \         # VNC also gives a framebuffer for screendump
-  -device VGA \                           # virtio-vga is NOT in the RHEL build (spike #1); bochs-display for UEFI
-  -qmp tcp:0.0.0.0:4444,server=on,wait=off \
-  -chardev socket,id=qga0,host=0.0.0.0,port=4445,server=on,wait=off \
-  -device virtio-serial-pci -device virtserialport,chardev=qga0,name=org.qemu.guest_agent.0 \
-  -serial file:/vm/out/serial.log \
-  -drive if=none,id=disk0,file=/vm/run/overlay.qcow2,format=qcow2 \
-  -device virtio-blk-pci,drive=disk0,bootindex=0 \
-  -netdev user,id=net0[,hostfwd=tcp::2222-:22] -device virtio-net-pci,netdev=net0 \
-  -audiodev none,id=snd0 \               # or wav,path=... (see §6.4)
-  -device ich9-intel-hda -device hda-duplex,audiodev=snd0 \
-  -device qemu-xhci,id=xhci \            # USB hot-plug bus
-  -device pcie-root-port,id=hp1,chassis=1 -device pcie-root-port,id=hp2,chassis=2 ...  # PCIe hot-plug slots
-  [-drive if=pflash,... OVMF]            # UEFI guests only
+| Variant | Tag | Contents |
+|---------|-----|----------|
+| slim | `${IMAGE_RUNNER}:${VERSION}-ubi9.8` | QEMU, qemu-img, firmware, tini, xorriso, python3 (helpers), jq, socat |
+| media | `${IMAGE_RUNNER}:${VERSION}-ubi9.8-media` | slim + GStreamer (`base`, `base-tools`, `good`, `bad-free`) |
+
+Screen recording requires **media**. On slim, `startScreenRecording` throws `UnsupportedOperationException("screen recording requires the media runner image")`. All other features work on both variants.
+
+### 6.2 Repositories (R11)
+
+| Repo id | Source | Priority | Restrictions |
+|---------|--------|----------|--------------|
+| `ubi-9-*` | built into UBI | **10** (set by sed on `/etc/yum.repos.d/ubi.repo`) | none |
+| `epel9` | `https://dl.fedoraproject.org/pub/epel/9/Everything/x86_64/` | 20 | gpgcheck=1, key `RPM-GPG-KEY-EPEL-9` |
+| `rocky98-baseos` / `-appstream` / `-crb` | `https://dl.rockylinux.org/pub/rocky/${ROCKY_RELEASE}/{BaseOS,AppStream,CRB}/x86_64/os/` | 90 | gpgcheck=1, key `RPM-GPG-KEY-Rocky-9`, `excludepkgs=rocky-release* rocky-logos* rocky-gpg-keys* rocky-repos*` |
+
+The exact repo files are `vm-testcontainer/container/spike/repos/*.repo` in this repo **[V]**. Copy them verbatim, with `9.8` replaced by `${ROCKY_RELEASE}`.
+
+> When Rocky moves 9.8 to `vault.rockylinux.org`, change only the baseurl host. As of 2026-10-18, `pub/rocky/9.8` is live and `vault/rocky/9.8` returns 404 **[V]**.
+
+### 6.3 Containerfile (normative)
+
+```dockerfile
+ARG UBI_IMAGE=registry.access.redhat.com/ubi9/ubi:9.8
+FROM ${UBI_IMAGE}
+ARG VARIANT=slim
+ARG VERSION
+ARG LABEL_PREFIX
+LABEL org.opencontainers.image.title="vmtc-runner" org.opencontainers.image.version="${VERSION}" \
+      ${LABEL_PREFIX}.variant="${VARIANT}"
+COPY repos/ /etc/yum.repos.d/
+RUN sed -i '/^\[/a priority=10' /etc/yum.repos.d/ubi.repo \
+ && rpm --import https://dl.rockylinux.org/pub/rocky/RPM-GPG-KEY-Rocky-9 \
+ && rpm --import https://dl.fedoraproject.org/pub/epel/RPM-GPG-KEY-EPEL-9 \
+ && PKGS="qemu-kvm-core qemu-img edk2-ovmf seabios-bin tini xorriso jq socat python3" \
+ && if [ "$VARIANT" = media ]; then PKGS="$PKGS gstreamer1 gstreamer1-plugins-base gstreamer1-plugins-base-tools gstreamer1-plugins-good gstreamer1-plugins-bad-free"; fi \
+ && dnf -y --setopt=install_weak_deps=False install $PKGS \
+ && dnf clean all \
+ && rpm -q redhat-release && ! rpm -qa 'rocky-*' | grep -q .
+COPY scripts/ /usr/local/bin/
+RUN chmod 0755 /usr/local/bin/vmtc-*
+EXPOSE 4444 4445 5900 5901 5902 5903
+ENTRYPOINT ["/usr/bin/tini", "-g", "--", "/usr/local/bin/vmtc-entrypoint"]
 ```
 
 Notes:
 
-- **Container ports:** QMP and QGA bind `0.0.0.0` *inside* the container. Testcontainers maps them to random host ports on loopback.
-- **q35 hot-plug:** q35 needs **pre-created `pcie-root-port`s** to hot-plug PCIe devices. The number of ports is configurable and defaults to 4.
-- **User-mode networking:** both `-netdev user` (libslirp) and `-netdev passt` are available (verified in spike #1). Default to `user`. Networking is not required for QGA-based exec and copy.
+- `${LABEL_PREFIX}` is substituted by the Gradle build (§11.2). The Containerfile receives it as `--build-arg LABEL_PREFIX=…` and uses `${LABEL_PREFIX}`.
+- The last `RUN` line is a guard: the build fails if `redhat-release` was replaced or any `rocky-*` package was installed.
+- The container runs as root *inside* the container. In rootless Podman that maps to the invoking host user.
+- `tini` (EPEL `tini-0.19.0-5.el9`) installs `/usr/bin/tini` **[V]**. `tini -g` forwards signals to the whole process group. tini reaps orphans, which fixes the recorder-zombie issue **[V]**: with QEMU as PID 1, stopped recorders stayed zombies.
+- There is no `nc` in the image **[V]**. Scripts use bash `/dev/tcp` or `socat` for port checks.
 
-### 5.2 KVM vs TCG
+### 6.4 Image build checks (part of `images` build, §11.2)
 
-| | KVM | TCG |
-|-|-----|-----|
-| Requires | `/dev/kvm` passed into the container | nothing |
-| CPU model | `host` | `max` |
-| Speed | near native | roughly 5–50× slower (workload dependent, **L**) |
-| Default timeouts | base | the Java side multiplies boot and exec timeouts by `tcgTimeoutFactor` (default 10) |
+After building, run these inside the image; each must succeed:
 
-`KvmMode` in Java:
-
-- `REQUIRE`: fail fast if the host has no usable `/dev/kvm`.
-- `PREFER` (default): use KVM when available, otherwise TCG.
-- `DISABLE`: always use TCG.
+1. `/usr/libexec/qemu-kvm -accel help | grep -qx tcg`
+2. `/usr/libexec/qemu-kvm -device help` contains every device listed in §3.2.
+3. **media only:** `gst-inspect-1.0` succeeds for `rfbsrc`, `vp8enc`, `webmmux`, `videorate`, `videoconvert`.
+4. `rpm -q redhat-release` succeeds, and no `rocky-release` is installed.
+5. `test -x /usr/bin/tini`.
 
 ---
 
-## 6. Feature design (per requirement)
+## 7. In-container scripts
 
-### 6.1 Run commands in the VM (R3)
+### 7.1 `vmtc-entrypoint` (bash; normative behaviour)
 
-- **Primary path: QGA `guest-exec`** with `capture-output: "separated"`, then poll `guest-exec-status` until `exited: true`.
-  - Polling starts at 50 ms and backs off to 500 ms.
-  - Output comes back base64-encoded, so Java decodes it.
-  - Returns `VmExecResult(exitCode, stdout, stderr, truncatedOut, truncatedErr)`.
-  - The **16 MiB per-stream cap** is documented. If a truncation flag is set, the API raises a warning or exception, depending on configuration.
-  - For large output, the recommended pattern is to redirect it to a file in the guest and then `copyFromVm`.
-- **Shell convenience:** `execShell("cmd | grep x")` wraps the command as `/bin/sh -c`.
-- **Optional fallback: SSH.** It uses `hostfwd` port 2222→22, the guest's sshd and a key injected by cloud-init. It covers guests without QGA, such as minimal or non-Linux images.
-  - This is a Phase 3 nice-to-have, not core.
-- **Timeouts:**
-  - Each call has a timeout.
-  - When it expires, QGA cannot kill the guest process directly. The module can run `guest-exec` of `kill <pid>`, because `guest-exec` returns a pid.
+**Inputs:** environment variables, all set by Java.
 
-### 6.2 Copy files to and from the VM (R4)
+| Env var | Default | Meaning |
+|---------|---------|---------|
+| `VM_ACCEL` | `auto` | `kvm` / `tcg` / `auto` (auto = `kvm` if `/dev/kvm` is readable and writable, else `tcg`) |
+| `VM_CPUS` | `2` | Boot vCPUs |
+| `VM_MAXCPUS` | `max(4, VM_CPUS)` | Hot-plug ceiling |
+| `VM_MEM_MB` | `2048` | Boot RAM |
+| `VM_MEM_SLOTS` / `VM_MAXMEM` | `4` / `8G` | DIMM hot-plug |
+| `VM_SCREENS` | `1` | 1..4 display heads |
+| `VNC_BIND` | `0.0.0.0` | Bind inside the container (host exposure is controlled by port publishing) |
+| `VNC_PASSWORD_ENABLED` | `0` | `1` adds `password=on` to every VNC server |
+| `VM_HOTPLUG_PORTS` | `4` | Number of `pcie-root-port`s, named `hp1..hpN` |
+| `VM_FIRMWARE` | `bios` | `bios` (SeaBIOS) or `uefi` (OVMF, §8.4) |
+| `VM_OVERLAY_SIZE` | *(empty)* | Optional virtual size for the overlay, e.g. `20G` |
+| `VM_EXTRA_ARGS` | *(empty)* | Appended to the QEMU command line, word-split (escape hatch) |
 
-- **To the VM:**
-  1. `guest-file-open(path, "w")`.
-  2. Loop `guest-file-write` with base64-encoded chunks, 1 MiB raw by default and configurable.
-  3. `guest-file-close`.
-  4. Optional `guest-exec chmod`.
-- **From the VM:** loop `guest-file-read(handle, count=1 MiB)` until `eof`. The 48 MiB cap applies per call, not per file.
-- **Directories:**
-  - v1 handles them by running `tar` in the guest through `guest-exec` and transferring the archive as one file.
-  - The alternative is walking the tree with `guest-exec ls`.
-- **Throughput:** QGA is base64 over a serial channel, so it is slow (**L**: roughly tens of MB/s at best).
-  - For bulk data such as large test fixtures, document the alternatives:
-    - **Attach a disk:** build a raw or ISO image in the container (`qemu-img` / `xorriso`) and hot-plug it (§6.6). That is fast and needs no guest network.
-    - Use SSH/SCP if it is enabled.
-- **virtiofs / 9p:** not planned.
-  - 9p/virtfs is very likely disabled in the RHEL build (**U**).
-  - virtiofs needs a separate `virtiofsd` daemon and shared memory. That is possible later, but complex.
+**Steps:**
 
-### 6.3 Screenshots (R6)
+1. Require `/vm/base/disk.img` to exist; otherwise print `VMTC_ERROR no base disk` and exit 2.
+2. `FMT=$(qemu-img info --output=json /vm/base/disk.img | jq -r .format)`.
+3. `qemu-img create -q -f qcow2 -F "$FMT" -b /vm/base/disk.img /vm/run/overlay.qcow2 ${VM_OVERLAY_SIZE}`.
+4. If `/vm/seed/user-data` exists, build the NoCloud ISO: `xorriso -as mkisofs -quiet -V cidata -J -r -o /vm/run/seed.iso /vm/seed/user-data /vm/seed/meta-data` (and `network-config` if present).
+5. Resolve the accelerator:
+   - `VM_ACCEL=kvm` while `/dev/kvm` is unusable → print `VMTC_ERROR kvm requested but /dev/kvm unusable` and exit 3.
+   - Print `VMTC_ACCEL kvm|tcg`.
+6. Build the QEMU argument array exactly as in §8.1.
+7. Print `VMTC_QEMU_STARTING <epoch>`.
+8. Run QEMU as a **child** of the script (not `exec`), so the script can report readiness:
+   - Start QEMU in the background.
+   - Poll every 50 ms, for up to 30 s, until `(exec 3<>/dev/tcp/127.0.0.1/4444)` succeeds.
+   - Print `VMTC_READY`.
+   - `wait` on QEMU and exit with its status.
+9. Trap SIGTERM:
+   - Run `printf '{"execute":"qmp_capabilities"}\n{"execute":"quit"}\n' | socat -t2 - TCP:127.0.0.1:4444`.
+   - If QEMU has not exited after 10 s, `kill -9` it.
 
-- QMP: `{"execute":"screendump","arguments":{"filename":"/vm/out/shot-N.png","format":"png"}}` (verified).
-- Java then calls `copyFileFromContainer` to the caller's path, or returns a `BufferedImage`.
-- The VM needs a display device: `VGA` or `bochs-display`. Both were verified present in spike #1; `virtio-vga` is **not** in the RHEL build.
-- **Bonus:** `VmScreen.waitFor(Predicate<BufferedImage>)` provides polling helpers. Image matching or OCR is **out of scope** for v1.
+The Java wait strategy waits for the log line `VMTC_READY` (§9.2).
 
-### 6.4 Audio recording (R7)
-
-Guest audio goes to an Intel HDA codec (`ich9-intel-hda` + `hda-duplex`). Capture options:
-
-| Option | How | Start/stop at will? | Notes |
-|--------|-----|---------------------|-------|
-| **A. `wavcapture` (recommended)** | `-audiodev none,id=snd0`; then HMP through QMP: `wavcapture /vm/out/a.wav snd0 [freq bits ch]`, and `stopcapture <n>` | **Yes** | **Verified with the `none` backend** (spike #4): a 1 kHz guest tone was captured correctly |
-| B. `wav` audiodev | `-audiodev wav,id=snd0,path=/vm/out/all.wav` | No; records the whole VM lifetime | Simple fallback. Java can trim by timestamps |
-| C. `pa` audiodev + PulseAudio in the container | Run pulseaudio and `parec` in the container | Yes | Heavier; not needed |
-
-- **API:** `try (AudioRecording r = vm.startAudioRecording(path)) { ... }`. On `close()`, the module sends `stopcapture`, copies the file out and returns its metadata.
-- **HMP caveat:** HMP output is text. The module parses `info capture` to find the capture index for `stopcapture`.
-- Microphone input (feeding audio *into* the guest) is **out of scope** and a possible extension.
-
-### 6.5 Screen recording (R8)
-
-QEMU has no built-in video recorder. VNC + ffmpeg is not an option, because ffmpeg has no VNC input (**L**). The recommended approach is a **frame-grab loop in the container**:
+### 7.2 `vmtc-rec` (bash; screen recorder control; media image only)
 
 ```
-vm-recorder.sh start <fps> <out.webm>
-   loop: QMP screendump → /vm/run/frames/%08d.png  (or pipe as image2pipe)
-   ffmpeg-free -f image2pipe -framerate <fps> -i - -c:v libvpx-vp9 ... out.webm
-vm-recorder.sh stop   → finalize, optionally mux wav from §6.4 into the webm (opus)
+vmtc-rec start <name> <screen-index> <fps> <bitrate-bps>   # env VNC_PASSWORD optional
+vmtc-rec stop  <name> [timeout-seconds=10]
+vmtc-rec status <name>
 ```
 
-- **Codec:** use **VP9 (`libvpx-vp9`) in WebM with Opus audio**. Both were verified present in spike #1, and MJPEG is the fallback.
-  - H.264 is **not usable**: EPEL installs the `noopenh264` stub library.
-- **Frame rate:** default 5 fps; configurable.
-  - Each screendump is a full-frame PNG encode inside QEMU, and under TCG that competes with the guest for CPU.
-- **Frame timing:** the loop is wall-clock driven and duplicates frames if a grab runs late.
-- **Pure-Java alternative (slim image):**
-  - Java pulls PNG frames and writes them out as an image sequence or Motion-JPEG AVI, with no ffmpeg dependency.
-  - This is the fallback when the media image isn't used.
-  - Each frame then crosses the container boundary, so it is slower.
-- **API:** `try (ScreenRecording r = vm.startScreenRecording(path, RecordingOptions.fps(5).withAudio(true))) {...}`.
+**`start`:**
 
-### 6.6 Hot-plug simulation (R9)
+1. Launch, detached (`setsid … &`), with stdin `/dev/null` and stdout/stderr to `/vm/out/<name>.log`:
 
-Everything goes through QMP. The module waits for completion events such as `DEVICE_DELETED`.
+   ```
+   gst-launch-1.0 -q -e rfbsrc host=127.0.0.1 port=$((5900+i)) view-only=true shared=true incremental=false [password=$VNC_PASSWORD] \
+     ! videorate ! video/x-raw,framerate=<fps>/1 ! videoconvert \
+     ! vp8enc deadline=1 cpu-used=8 threads=2 target-bitrate=<bitrate> ! webmmux ! filesink location=/vm/out/<name>.webm
+   ```
 
-| Device type | Plug | Unplug | Prerequisite |
-|-------------|------|--------|--------------|
-| USB mass storage | `blockdev-add` (file → node) + `device_add usb-storage,bus=xhci.0,drive=<node>` | `device_del` → wait `DEVICE_DELETED` → `blockdev-del` | `qemu-xhci` present at boot |
-| USB HID (keyboard/mouse/tablet) | `device_add usb-kbd` / `usb-tablet` | `device_del` | xhci |
-| virtio-blk disk | `blockdev-add` + `device_add virtio-blk-pci,bus=hpN` | `device_del` (needs guest cooperation) | free `pcie-root-port` |
-| NIC | `netdev_add user,id=..` + `device_add virtio-net-pci,bus=hpN` | `device_del` + `netdev_del` | free root port |
-| CD-ROM media change | `blockdev-change-medium` / `eject` | — | a SCSI or AHCI CD drive present at boot |
-| Serial / virtio-serial port | `chardev-add` + `device_add virtserialport` | `device_del` + `chardev-remove` | virtio-serial bus |
-| vCPU / memory (stretch) | `device_add <cpu-type>` / `object-add memory-backend-ram` + `pc-dimm` | — | `-smp maxcpus=`, `-m slots=,maxmem=` |
+2. Write the PID to `/vm/run/<name>.pid` and print `VMTC_REC_STARTED <pid>`.
 
-- **Allowed devices:** the RHEL build only allows certain device types, so the exact list must be confirmed with `-device help` in the spike.
-  - `usb-audio` is already known to be **unavailable**.
-- **PCIe unplug needs the guest:** it is a cooperative ACPI/PCIe handshake. If the guest ignores it, `DEVICE_DELETED` never arrives, so the module applies a timeout and reports the failure.
-- **Real host USB passthrough** (`usb-host`) is **out of scope**: it needs device access from the host, which rootless Podman can't give.
-- **Images for plugged storage:** create them on the fly with `qemu-img create` inside the container, or copy them in from the host.
-- **Java API:**
+**`stop`:**
 
-  ```java
-  HotplugHandle h = vm.hotplug(Devices.usbStorage(Path.of("data.img")).readOnly());
-  // ... assert guest saw it via vm.exec("lsblk")
-  h.unplug(Duration.ofSeconds(30));
-  ```
+1. `kill -INT <pid>`.
+2. Poll every 100 ms. A process counts as alive if `/proc/<pid>` exists **and** its `State` is not `Z`. Give up after the timeout.
+3. If it is still alive, `kill -9` it and print `VMTC_REC_KILLED`.
+4. Validate with `gst-discoverer-1.0 /vm/out/<name>.webm`:
+   - On success, print `VMTC_REC_OK duration=<s> width=<w> height=<h>`.
+   - Otherwise print `VMTC_REC_INVALID` followed by the log tail.
+5. **The gst-launch exit code is ignored** (it is 1 even on success) **[V]**.
+
+**`status`:** prints `running` or `stopped`.
+
+**Defaults:** fps 10, bitrate 1 000 000 **[V]**.
+
+### 7.3 `vmtc-fb-activate.py` (guest helper; copied into the guest on demand)
+
+This is the verified script `vm-testcontainer/container/spike/fb-activate.py` **[V]**. It opens `/dev/fbN`, issues `FBIOGET_VSCREENINFO`, sets `activate=FB_ACTIVATE_FORCE` (offset 84, value 0x80), issues `FBIOPUT_VSCREENINFO`, then `FBIOBLANK(0)`.
+
+The Java side uses it in `VmScreen.forceModeset()` (§9.7).
 
 ---
 
-## 7. VM image supply — options & recommendation
+## 8. QEMU configuration
 
-### 7.1 Options considered
-
-| # | Option | How | Pros | Cons |
-|---|--------|-----|------|------|
-| 1 | **Host file bind mount** | `withFileSystemBind(host, "/vm/base/disk.img", READ_ONLY)` | Zero copy; instant; simple | Image must exist locally; SELinux relabel (`:z`) on a host file can be intrusive (see §10.3) |
-| 2 | Copy into container | `withCopyFileToContainer` (tar stream over the API) | Works with remote engines | Copies multi-GB on **every** start: slow |
-| 3 | **Bake into derived image** | `FROM runner` + `COPY disk.qcow2 /vm/base/disk.img` | Distributable through a registry; cached by layers; good for CI | One image per disk; large layers; rebuild on runner upgrade |
-| 4 | **containerDisk OCI image** (KubeVirt convention) | `FROM scratch` + `/disk/*.qcow2`; consumed by mount or by extract-and-cache | Versioned in a registry independently of the runner; known convention | Needs a mount or extract step (see 7.3) |
-| 5 | OCI artifact (`podman artifact`) | `--mount type=artifact` (Podman 5.5+/5.6+) | Purpose-built for blobs; no fake filesystem | Newer; docker-java/Testcontainers can't express this mount type (**L**, the `MountType` enum); Podman-only |
-| 6 | **URL + checksum download, cached** | Java downloads to `~/.cache/...`, verifies sha256, then option 1 | Easy for public cloud images (Rocky, Fedora, etc.) | First-run download time; needs network |
-| 7 | Named Podman volume pre-seeded | Volume holds the disk; mount the volume | Survives runs; works for remote engines | Lifecycle management; opaque to the user |
-
-### 7.2 Recommendation
-
-**Every source resolves to a local, read-only base file. It is bind-mounted, and a per-run qcow2 overlay sits on top.** One runtime path; many front-ends.
+### 8.1 Command line (normative; built by `vmtc-entrypoint`)
 
 ```
- VmImage.fromPath(Path)                ─┐
- VmImage.fromUrl(URI, sha256)          ─┤──► VmImageResolver ──► local file in cache ──► ro bind mount
- VmImage.fromContainerDisk("reg/img:t")─┤        (download / podman pull+extract,          /vm/base/disk.img
- VmImage.fromClasspath("vm/x.qcow2")   ─┘         verify checksum, lock, dedupe)               │
-                                                                                               ▼
- VmImage.baked()  ── image already contains /vm/base/disk.img ─────────────────► qemu-img create overlay
+/usr/libexec/qemu-kvm -name vm -nodefaults -no-user-config -M q35
+  {kvm: -accel kvm -cpu host | tcg: -accel tcg -cpu max}
+  -smp ${VM_CPUS},maxcpus=${VM_MAXCPUS}  -m ${VM_MEM_MB},slots=${VM_MEM_SLOTS},maxmem=${VM_MAXMEM}
+  -display none
+  for i in 0..VM_SCREENS-1:
+     -device {i==0: VGA | else: secondary-vga},id=video$i
+     -vnc ${VNC_BIND}:$i,id=vnc$i,display=video$i,share=force-shared[,password=on]
+  -qmp tcp:0.0.0.0:4444,server=on,wait=off
+  -chardev socket,id=qga0,host=0.0.0.0,port=4445,server=on,wait=off
+  -device virtio-serial-pci -device virtserialport,chardev=qga0,name=org.qemu.guest_agent.0
+  -serial file:/vm/out/serial.log
+  -drive file=/vm/run/overlay.qcow2,format=qcow2,if=none,id=disk0 -device virtio-blk-pci,drive=disk0,bootindex=0
+  [seed: -drive file=/vm/run/seed.iso,format=raw,if=none,id=seed,readonly=on -device virtio-blk-pci,drive=seed]
+  -netdev user,id=net0 -device virtio-net-pci,netdev=net0
+  -audiodev none,id=snd0 -device ich9-intel-hda -device hda-duplex,audiodev=snd0
+  -device qemu-xhci,id=xhci
+  -device virtio-scsi-pci,id=scsi0 -device scsi-cd,id=cd0,bus=scsi0.0
+  for j in 1..VM_HOTPLUG_PORTS: -device pcie-root-port,id=hp$j,chassis=$j
+  [uefi: §8.4]
+  ${VM_EXTRA_ARGS}
 ```
 
-Why:
+**[V]**: every element above ran in CI (`vm-testcontainer/container/spike/start-vm.sh` is the verified reference). The only differences in the reference script are that it bound QMP and QGA to 127.0.0.1 and accessed them with `podman exec`. Production binds `0.0.0.0` *inside the container* so the ports can be published. Host-side publishing binds to `127.0.0.1` (§9.2).
 
-1. **Speed:** a bind mount is O(1). The overlay means the cached base is never written and every test starts clean.
-2. **One code path** inside the container, whatever the source. That means fewer things to test.
-3. **Supply chain:** containerDisk images let teams version and distribute guest images through the same registry and tooling as everything else.
-   - Extracting them to the cache avoids depending on mount types that docker-java's compat API may not support (`type=image` and `type=artifact`, **L/U**).
-   - Extraction uses the `podman` CLI (`podman create` + `podman cp`, or `podman image mount`) and is keyed by image digest.
-4. **CI friendliness:** `VmImage.baked()` (option 3) covers environments where bind mounts are impossible, such as a remote Podman or a podman-machine VM on macOS.
+### 8.2 Acceleration (R12)
 
-**Cache details:**
+| `KvmMode` (Java) | Host `/dev/kvm` usable (§9.6) | Effect |
+|------------------|-------------------------------|--------|
+| `REQUIRE` | yes | `--device /dev/kvm`, `VM_ACCEL=kvm` |
+| `REQUIRE` | no | `start()` throws `KvmUnavailableException` with the remediation text from §9.6 |
+| `PREFER` (default) | yes | as REQUIRE |
+| `PREFER` | no | no device; `VM_ACCEL=tcg`; WARN log once per JVM |
+| `DISABLE` | any | no device; `VM_ACCEL=tcg` |
 
-- Location: `${XDG_CACHE_HOME:-~/.cache}/qemu-testcontainer/images/<sha256>.<fmt>`.
-- A file lock (`FileChannel.lock`) guards concurrent test JVMs.
-- Downloads are atomic: write to a temp file, then rename.
-- Eviction is manual; a helper is provided.
+Under TCG, every default timeout is multiplied by `tcgTimeoutFactor` (default **6**, from the measured 66.5 s / 12.1 s ≈ 5.5).
 
-**Phasing:**
+### 8.3 Screens and VNC (D5, R9)
 
-- Phase 1: `fromPath`, `fromUrl`.
-- Phase 2: `fromContainerDisk`, `baked`.
-- Phase 3: `fromClasspath`, which is rarely sensible for GB-sized files.
+- `withScreens(n)` takes n in 1..4 (default 1). Head 0 is `VGA`; heads 1..n-1 are `secondary-vga`. **[V]** with n=2.
+- Each head *i* has one VNC server on container port `5900+i`, which Testcontainers publishes. The host bind address is `127.0.0.1` by default; `withVncBindAddress("0.0.0.0")` makes it remotely reachable.
+- `share=force-shared` is always set. With `withVncPassword(String)`, `password=on` is added. After `VMTC_READY`, Java calls QMP `set_password {protocol:"vnc", password, display:"vnc<i>"}` **for every i** **[V]**. Recorders get the password through the `VNC_PASSWORD` env of `vmtc-rec`.
+- VNC passwords are limited to 8 significant characters (RFB VNC auth). Java rejects longer passwords with `IllegalArgumentException` **[D]**.
+- Secondary heads show "Guest has not initialized the display (yet)" at 640×480 until the guest modesets them **[V]**. This is guest behaviour, not a library bug.
+
+### 8.4 UEFI (optional; `VM_FIRMWARE=uefi`)
+
+```
+-drive if=pflash,format=raw,unit=0,readonly=on,file=/usr/share/edk2/ovmf/OVMF_CODE.fd
+-drive if=pflash,format=raw,unit=1,file=/vm/run/OVMF_VARS.fd     # copied from /usr/share/edk2/ovmf/OVMF_VARS.fd at start
+```
+
+**[U]**: the OVMF file paths come from the `edk2-ovmf` package and were not exercised in CI.
+
+**Milestone M2** includes one acceptance test, `uefi_boot`, which boots the Rocky GenericCloud image (it supports UEFI **[D]**) with `VM_FIRMWARE=uefi` and checks QGA comes up. If the file names differ, take them from `rpm -ql edk2-ovmf` in the image.
 
 ---
 
-## 8. Guest image requirements
+## 9. Java library design
 
-The module defines a **guest contract** and ships a reference build recipe.
+### 9.1 Packages
 
-| Need | Why | How |
-|------|-----|-----|
-| x86-64, virtio drivers | virtio-blk, virtio-net, virtio-serial | standard in modern distros |
-| `qemu-guest-agent` running | exec and copy (§6.1, §6.2) | package + enable service |
-| **QGA RPC filter relaxed** | RHEL/Rocky `/etc/sysconfig/qemu-ga` blocks guest-exec and guest-file-\* by default (V) | set `FILTER_RPC_ARGS=""` (or add the needed RPCs) |
-| **QGA SELinux domain relaxed** (SELinux guests) | exec'd commands inherit the confined `virt_qemu_ga_t` domain and fail with "Permission denied" on ordinary files (V) | `semanage permissive -a virt_qemu_ga_t`. It is scoped to that one domain; the rest of the guest stays enforcing. Alternative: a custom policy module (more work) |
-| Audio mixer unmuted (audio tests only) | captured audio was all-zero until Master/PCM were set (V) | `amixer -c 0 sset Master 90% unmute; amixer -c 0 sset PCM 90% unmute` |
-| Serial console | boot diagnostics in `serial.log` | `console=ttyS0` on the kernel cmdline |
-| ACPI hot-plug support | §6.6 unplug | standard |
-| Optional: cloud-init | first-boot config without rebuilding the image | NoCloud seed ISO generated by the container |
+| Package | Contents |
+|---------|----------|
+| `${BASE_PACKAGE}` | `QemuVmContainer`, `VmImage`, `KvmMode`, `RunnerVariant`, `VmtcConstants` (generated), exceptions |
+| `${BASE_PACKAGE}.qmp` | `QmpClient`, `QmpEvent`, `QmpException` |
+| `${BASE_PACKAGE}.qga` | `GuestAgentClient`, `GuestExecResult`, `GuestAgentException`, `GuestCommandDisabledException` |
+| `${BASE_PACKAGE}.image` | `VmImageResolver`, `VmImageCache`, `ContainerDiskExtractor`, `ImageDownloader` |
+| `${BASE_PACKAGE}.display` | `VmScreen`, `VncEndpoint`, `ScreenRecording`, `RecordingOptions`, `KeyboardInput` |
+| `${BASE_PACKAGE}.audio` | `AudioRecording` |
+| `${BASE_PACKAGE}.hotplug` | `Devices`, `DeviceSpec` (sealed), `HotplugHandle`, `CdromDrive` |
+| `${BASE_PACKAGE}.cloudinit` | `CloudInitSeed` (builder for user-data/meta-data) |
+| `${BASE_PACKAGE}.internal` | `KvmDetector`, `PortBindings`, `Json` (Jackson), `Backoff` (not exported; JPMS `module-info` exports only the packages above) |
 
-**Using stock cloud images:**
+**Dependencies:**
 
-- Rocky 9 GenericCloud ships cloud-init **and** a running qemu-guest-agent (V), but exec and file RPCs are blocked and SELinux confines the agent (V).
-- The module can generate a **NoCloud seed ISO** (`cidata` volume label) whose `user-data`:
-  - rewrites `/etc/sysconfig/qemu-ga`;
-  - runs `semanage permissive -a virt_qemu_ga_t`;
-  - restarts the agent.
-  - A working example is in `vm-testcontainer/container/spike/make-seed.sh`.
-- **Caveats:**
-  - **Rocky GenericCloud needs no package install** for exec and copy, so the seed works offline. It needs network only for extras such as `alsa-utils`.
-  - Under TCG, runcmd steps that install packages are slow: about 9.5 min to finish in the spike, which was dominated by `dnf`.
-  - This only works for cloud-init-enabled images.
-- **Pre-customized images are better for CI.**
-  - Ship a `build-guest-image` recipe that uses `virt-customize`. Whether libguestfs is available on UBI or Rocky in the container is **U**; it can run on the host.
-  - Publish the result as a containerDisk (§7).
+| Scope | Dependencies |
+|-------|--------------|
+| `api` | `org.testcontainers:testcontainers:${TESTCONTAINERS_VERSION}` |
+| `implementation` | `com.fasterxml.jackson.core:jackson-databind:${JACKSON_VERSION}`, `org.apache.commons:commons-compress` (tar extraction; **[V]** in probe) |
+| tests | JUnit, AssertJ, slf4j-simple |
 
-**Reference test guest (decided):** Rocky 9 x86-64. Start from the GenericCloud qcow2, then customize it: enable `qemu-guest-agent`, clear `FILTER_RPC_ARGS` and set `console=ttyS0`. Publish it as a containerDisk. **Scope:** Linux guests only.
-
----
-
-## 9. Java API sketch
+### 9.2 `QemuVmContainer` (public API, normative)
 
 ```java
-@Testcontainers
-class MyVmTest {
+public class QemuVmContainer extends GenericContainer<QemuVmContainer> {
+  public QemuVmContainer();                                    // default runner image, SLIM
+  public QemuVmContainer(RunnerVariant variant);               // SLIM | MEDIA → VmtcConstants.defaultRunnerImage(variant)
+  public QemuVmContainer(DockerImageName runnerImage);         // custom/derived runner image
 
-  @Container
-  static QemuVmContainer vm = new QemuVmContainer(QemuVmContainer.DEFAULT_IMAGE)   // runner image
-      .withVmImage(VmImage.fromUrl(URI.create("https://.../rocky-9-qga.qcow2"), "sha256:..."))
-      .withKvm(KvmMode.PREFER)
-      .withCpus(2).withMemoryMb(2048)
-      .withDisplay(Display.VGA)
-      .withAudio(true)
-      .withHotplugSlots(4)
-      .withSerialLogConsumer(new Slf4jLogConsumer(log))   // stream serial.log
-      .withGuestAgentStartupTimeout(Duration.ofMinutes(3)); // ×tcgTimeoutFactor under TCG
+  // configuration (all return this)
+  withVmImage(VmImage image)                                   // required unless image is VmImage.baked()
+  withKvm(KvmMode mode)                                        // default PREFER (overridable: -D${SYSPROP_PREFIX}.kvm / ${ENV_PREFIX}KVM)
+  withCpus(int boot) / withMaxCpus(int max)                    // defaults 2 / max(4,boot)
+  withMemoryMb(int mb) / withMemoryHotplug(int slots, String maxmem)   // defaults 2048 / 4,"8G"
+  withScreens(int n)                                           // 1..4, default 1
+  withVncBindAddress(String hostIp)                            // default "127.0.0.1"
+  withVncPassword(String pw)                                   // ≤ 8 chars; default none
+  withHotplugPorts(int n)                                      // 0..8, default 4
+  withFirmware(Firmware f)                                     // BIOS (default) | UEFI
+  withCloudInit(CloudInitSeed seed)                            // optional NoCloud seed (§10.2)
+  withGuestAgentTimeout(Duration d)                            // default 180 s (×tcgTimeoutFactor under TCG)
+  withTcgTimeoutFactor(double f)                               // default 6.0
+  withSerialLogConsumer(Consumer<String> lineConsumer)         // tails /vm/out/serial.log
+  withQemuArgs(String... extra)                                // → VM_EXTRA_ARGS (escape hatch)
 
-  @Test
-  void example() throws Exception {
-    VmExecResult r = vm.exec("uname", "-m");
-    assertEquals("x86_64", r.stdout().strip());
+  // lifecycle: start() inherited; ready = VMTC_READY log line + QMP handshake + QGA guest-ping success
 
-    vm.copyToVm(Path.of("src/test/resources/app.tar"), "/tmp/app.tar");
-    vm.copyFromVm("/var/log/messages", tempDir.resolve("messages"));
+  // state
+  Accelerator accelerator();                                   // KVM | TCG (from VMTC_ACCEL line)
+  QmpClient qmp();  GuestAgentClient guestAgent();
 
-    vm.screenshot(tempDir.resolve("boot.png"));
+  // R3 / R4
+  GuestExecResult exec(String... argv);                        // timeout = default exec timeout (60 s ×factor)
+  GuestExecResult exec(Duration timeout, String... argv);
+  GuestExecResult execShell(String script);                    // /bin/sh -c script
+  void copyToVm(Path local, String guestPath);                 // creates parent dirs via guest-exec mkdir -p
+  void copyToVm(byte[] content, String guestPath);
+  void copyFromVm(String guestPath, Path local);
+  byte[] readFromVm(String guestPath);
 
-    try (var rec = vm.startScreenRecording(tempDir.resolve("run.webm"), RecordingOptions.fps(5).withAudio(true));
-         var aud = vm.startAudioRecording(tempDir.resolve("run.wav"))) {
-      vm.exec("speaker-test", "-t", "sine", "-l", "1");
-    }
+  // R6 / R9
+  List<VmScreen> screens();                                    // size == withScreens(n)
+  VmScreen screen(int index);
 
-    try (HotplugHandle usb = vm.hotplug(Devices.usbStorage(tempDir.resolve("stick.img")))) {
-      await().until(() -> vm.exec("lsblk").stdout().contains("sdb"));
-    } // auto-unplug
-  }
+  // R7
+  AudioRecording startAudioRecording(Path hostWav);            // one active at a time; else IllegalStateException
+
+  // R10
+  HotplugHandle hotplug(DeviceSpec spec);
+  CdromDrive cdrom();                                          // the always-present cd0
+
+  // artifacts
+  Path saveSerialLog(Path hostFile);
 }
 ```
 
-### Main types
+**Startup sequence (`containerIsStarting` / `containerIsStarted` overrides):**
 
-| Type | Responsibility |
-|------|----------------|
-| `QemuVmContainer extends GenericContainer<QemuVmContainer>` | Container config, `/dev/kvm` wiring, ports, wait strategy, facade methods |
-| `QmpClient` | QMP handshake (`qmp_capabilities`), request/response correlation by `id`, async event stream, `human-monitor-command` helper |
-| `GuestAgentClient` | QGA JSON protocol, `guest-sync-delimited` resync (needed after reconnects), exec, file ops |
-| `VmImage`, `VmImageResolver`, `VmImageCache` | §7 |
-| `VmKeyboard` | `send-key` / `input-send-event` typing (verified useful for console login in spikes) |
-| `ScreenRecording`, `AudioRecording`, `HotplugHandle` | `AutoCloseable` handles |
-| `Devices` | Builders for hot-plug devices, mapped to `blockdev-add` / `device_add` argument maps |
-| `KvmMode`, `KvmDetector` | Host-side check that `/dev/kvm` exists and is R/W by the current user |
+1. Resolve `VmImage` → host file (§9.3).
+2. Bind it read-only at `/vm/base/disk.img`.
+   - On SELinux-enforcing hosts (`/sys/fs/selinux/enforce` reads `1`), use `Bind` with `SELContext.shared` (`:z`).
+   - Only files inside the cache dir are ever bound; see §9.3.
+3. KVM decision (§8.2 / §9.6) → `HostConfig.withDevices(Device.parse("/dev/kvm"))` when used.
+4. Publish ports 4444, 4445 and 5900..5900+n-1 with explicit `PortBinding(Ports.Binding.bindIp("127.0.0.1"), …)`. VNC ports use the configured bind address.
+5. Labels:
+   - `${LABEL_PREFIX}.managed=true`
+   - `${LABEL_PREFIX}.version=${VERSION}`
+   - `${LABEL_PREFIX}.session=<random uuid per JVM>`
+6. Set the env vars of §7.1. Write the cloud-init seed files with `withCopyToContainer(Transferable, "/vm/seed/…")`.
+7. Wait strategy: `Wait.forLogMessage(".*VMTC_READY.*", 1)` with a 60 s timeout. Also fail fast if `VMTC_ERROR` appears.
+8. Connect QMP (handshake `qmp_capabilities`) and parse the `VMTC_ACCEL` log line.
+9. If a VNC password is configured, call `set_password` for each display.
+10. Connect QGA and poll `guest-ping` every 1 s until the guest-agent timeout.
+    - On timeout: throw `GuestAgentTimeoutException` with the last 50 serial-log lines attached.
+11. Call `guest-info`. If `guest-exec` or `guest-file-open` is listed with `enabled:false`, throw `GuestCommandDisabledException`. Its message points to §10.1 (RPC filter and SELinux).
+12. Run `id -Z`. If the result contains `virt_qemu_ga_t`, check that the domain is permissive by running `cat /proc/self/attr/current` **and** test-reading `/usr/share`.
+    - On EACCES, throw `GuestAgentConfinedException` with the remediation from §10.1.
 
-### Dependencies
+`stop()`: send QMP `quit`, then let Testcontainers stop the container.
 
-- `org.testcontainers:testcontainers` 2.0.x (latest verified: 2.0.5).
-- JSON: Jackson. Plain JSON-over-socket is used, with no QMP library.
-  - Existing Java QMP libraries are few and likely unmaintained (**U**).
-- Java 21, the same as the repo.
-
-### Wait strategy
-
-1. Wait for `QEMU_READY` in the container logs.
-2. Connect to QMP.
-3. Poll QGA `guest-ping` until it answers or the boot timeout expires.
-
-### Integration with existing code
-
-- The serial log and any recordings can feed into the repo's existing `LoggingAttachmentExtension` as test attachments. This is optional.
-
----
-
-## 10. Podman / Testcontainers integration
-
-### 10.1 Engine connection (R1)
-
-- Enable the socket: `systemctl --user enable --now podman.socket`.
-- `DOCKER_HOST=unix://${XDG_RUNTIME_DIR}/podman/podman.sock`.
-- Rootless: `TESTCONTAINERS_RYUK_DISABLED=true`. Without Ryuk, Java cleanup relies on `@Container` / `close()`. Document how to clean up containers left behind by a crashed JVM, by filtering on a label the module adds.
-- Rootful: Testcontainers ≥ 1.19.0 needs no special Ryuk flag. `ryuk.container.privileged=true` is still available.
-
-### 10.2 `/dev/kvm` passthrough
+### 9.3 VM images (R5, image supply)
 
 ```java
-withCreateContainerCmdModifier(cmd -> cmd.getHostConfig()
-    .withDevices(Device.parse("/dev/kvm")));   // only when KvmDetector says usable
+public sealed interface VmImage {
+  static VmImage fromPath(Path file);                          // qcow2 or raw
+  static VmImage fromUrl(URI url, String sha256);              // sha256 required
+  static VmImage fromContainerDisk(DockerImageName image);     // KubeVirt containerDisk: /disk/<single file>
+  static VmImage baked();                                      // runner image already contains /vm/base/disk.img
+}
 ```
 
-- **Rootless:** the device is bind-mounted from the host, so the invoking user must already have read and write access.
-  - With the systemd default mode `0666`, they usually do.
-  - With `0660`, the user must be in group `kvm`, and the group must reach the container. `--group-add keep-groups` is the CLI way.
-  - **Whether that works through the Docker-compatible API is unverified.** Phase 0 tests it.
-  - Fallback: the annotation `run.oci.keep_original_groups=1` through `HostConfig` annotations (crun).
-- **SELinux hosts:** may need `setsebool -P container_use_devices=true`. `KvmDetector` cannot see this, so start-up checks it inside the container and falls back or fails according to `KvmMode`.
-- **Under TCG:** no device, no capabilities, no privileged mode.
+#### 9.3.1 Cache (`VmImageCache`)
 
-### 10.3 Bind-mount & SELinux
+- **Root:** `${XDG_CACHE_HOME:-$HOME/.cache}/${CACHE_DIR_NAME}/images/`. Override with `-D${SYSPROP_PREFIX}.cacheDir` or `${ENV_PREFIX}CACHE_DIR`.
+- **Entry name:** `<sha256>.img`. The format is detected by QEMU at run time.
+- **Concurrency:** a `FileChannel.lock()` on `<sha256>.lock` serializes concurrent JVMs. Writes go to `<sha256>.tmp-<pid>`, then `ATOMIC_MOVE`.
+- **`fromPath`:**
+  1. Hash the file (SHA-256, streaming).
+  2. If `<sha256>.img` is missing, try `Files.createLink`. If the hard link fails (cross-device), copy.
+  3. Return the cache entry.
 
-- On SELinux-enforcing hosts, a read-only bind of a cache file needs the right label.
-  - Options: relabel once, e.g. `chcon -t container_file_t` on the cache dir, or use `:z` on the mount.
-  - `:z` relabels the host file, which is fine for files in the module's own cache directory.
-  - **Never** relabel arbitrary user paths automatically. For `fromPath` outside the cache, document the requirement or copy the file into the cache.
-- **UID mapping:** QEMU runs as the container's root user, which maps to the host user in rootless mode. The base file therefore only needs to be readable by the invoking user.
+  Hashing a multi-GB file takes seconds. Hashes are memoized by `(path, size, mtime)` in `<cache>/index.json`.
+- **`fromUrl`:** stream the download to tmp while hashing, verify, then move. A mismatch throws `ImageChecksumException`. Uses `java.net.http.HttpClient`, which honours the JVM proxy properties.
+- **`fromContainerDisk`:** see §9.3.3. The cache key is `sha256(imageId + "/" + entryName)` and is stored as `<key>.img`.
+- **Eviction:** none automatic. `VmImageCache.prune(Duration olderThan)` is a public helper.
 
-### 10.4 Resources
+#### 9.3.2 Why the base disk is always bind-mounted from the cache
 
-- Memory is VM RAM plus QEMU overhead, around 256 MB+ (**L**). Optionally set a container memory limit of VM RAM + 512 MB.
-- `/vm/run` (the overlay) and `/vm/out` live in the container's writable layer by default. A tmpfs is an option for speed when RAM allows.
+- The overlay makes per-start state disposable: no copy, and O(1) start.
+- The SELinux relabel (`:z`) only ever touches files the library owns.
+- One code path inside the container (`/vm/base/disk.img`), whatever the source.
+
+#### 9.3.3 containerDisk extraction (`ContainerDiskExtractor`)
+
+Uses the Testcontainers `DockerClient`; **no `podman` CLI**.
+
+1. Pull if absent (`PullPolicy.defaultPolicy()`).
+2. `inspectImageCmd(image).getId()` → `imageId`.
+3. `createContainerCmd(image).withCmd("/none")` creates without starting. The command is required because containerDisk images have no CMD.
+4. `copyArchiveFromContainerCmd(id, "/disk/")` → tar stream. Require **exactly one** regular file under `/disk/`; otherwise throw `IllegalArgumentException`. Stream it into the cache tmp file.
+5. `removeContainerCmd(id).withForce(true)` in `finally`.
+
+| Engine | Result |
+|--------|--------|
+| Docker 29.8 (sandbox) | **[V]** byte-exact |
+| Podman 4.9.3 / 5.7.0 (rootless, compat API) | **[V]** byte-exact (CI run 4) |
+
+#### 9.3.4 `baked()`
+
+- The user builds `FROM ${IMAGE_RUNNER}:…` plus `COPY disk.qcow2 /vm/base/disk.img`.
+- No bind is created. The entrypoint uses the baked file.
+- Intended for remote engines or podman-machine setups where host bind mounts are impossible.
+
+### 9.4 Exec (R3): `GuestAgentClient`
+
+**Protocol:**
+- JSON objects separated by newlines over TCP.
+- On every (re)connect, resync with `guest-sync-delimited {id}`: send it, skip a leading `0xFF` byte, and read until `return == id` **[V]**.
+- Only one request is in flight per connection. Wrap calls in a `ReentrantLock`; QGA is not multiplexed.
+
+**`exec(timeout, argv)`:**
+1. Send `guest-exec {path: argv[0], arg: argv[1..], capture-output: true}` → `pid`.
+   - Optional: `env: [...]` and `input-data` (base64 stdin) through the overloads `exec(ExecRequest)`.
+2. Poll `guest-exec-status {pid}`. Start at 50 ms and back off ×1.5 up to 500 ms, until `exited` or the timeout.
+3. On timeout, run `guest-exec /bin/kill -9 <pid>` (best effort) and throw `GuestExecTimeoutException`.
+4. Return `GuestExecResult(int exitCode, Integer signal, String stdout, String stderr, boolean stdoutTruncated, boolean stderrTruncated)`, decoding base64 as UTF-8 with replacement.
+
+**Limits:**
+- Each output stream is capped at 16 MiB by QGA **[D]**. Truncation is reported through the flags.
+- The guest runs the command with `PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin` **[V]**.
+
+### 9.5 File copy (R4)
+
+**Write:**
+1. `guest-file-open {path, mode:"w"}` → handle.
+2. For each 1 MiB chunk, `guest-file-write {handle, buf-b64}`.
+3. `guest-file-close`.
+
+**Read:**
+1. `guest-file-open {mode:"r"}`.
+2. Loop `guest-file-read {handle, count: 1048576}` until `eof`. The per-call maximum is 48 MiB **[D]**.
+3. `guest-file-close`.
+
+Always close in `finally`.
+
+**Throughput [V]:**
+
+| Accel | Write | Read |
+|-------|-------|------|
+| KVM | 20 MB/s | 46 MB/s |
+| TCG | 1.4 MB/s | 4.8 MB/s |
+
+Bigger data (≥ 100 MB) should go through a hot-plugged disk image; the Javadoc should say so.
+
+**Parent directories:** `copyToVm` runs `mkdir -p <parent>` through guest-exec first.
+
+### 9.6 KVM detection and Podman group handling (R12)
+
+`KvmDetector.usable()` returns true if and only if `/dev/kvm` exists **and** `Files.isReadable && Files.isWritable` for the JVM user.
+
+> With rootless Podman, the device is bind-mounted with the host permissions, so the JVM user's access is what counts **[D]**.
+
+**What Testcontainers can pass through the compat API [V]:**
+
+| Host `/dev/kvm` | Podman | Device only | `GroupAdd keep-groups` | Annotation `run.oci.keep_original_groups=1` (API) | `containers.conf` annotation (server side) |
+|-----------------|--------|-------------|------------------------|---------------------------------------------------|--------------------------------------------|
+| `0666` | 4.9.3, 5.7.0 | **works** | container fails to start | works | — |
+| `0660 root:kvm`, user in `kvm` | 4.9.3 | EACCES | fails to start | EACCES | **works** |
+| `0660 root:kvm`, user in `kvm` | 5.7.0 | EACCES | fails to start | **works** | **works** |
+
+All of these were measured with the Podman service running in a normal login session, so `kvm` was a *supplementary* group of the service process. Under `sg kvm`, `kvm` becomes the *primary* group, keep-groups does not preserve it, and every variant fails.
+
+**Library behaviour:**
+
+1. If `usable()` and the device is world-RW (`0666`), pass `--device /dev/kvm` and nothing else.
+2. If `usable()` but **not** world-RW (group-only access):
+   - Pass the device **and** `HostConfig.withAnnotations(Map.of("run.oci.keep_original_groups","1"))`. This requires the crun runtime, which is the Podman default.
+   - **Never** use `GroupAdd keep-groups`: it prevents the container from starting.
+   - The entrypoint resolves `VM_ACCEL=auto` by testing `/dev/kvm` itself. The Java side reads the `VMTC_ACCEL` line.
+   - If `VMTC_ACCEL tcg` appears although KVM was intended (for example Podman 4.9 ignores the API annotation): under `REQUIRE`, the entrypoint exits 3 because Java passes `VM_ACCEL=kvm`, and Java throws `KvmUnavailableException`. Under `PREFER`, keep running on TCG and log a WARN.
+   - In both cases include this remediation text:
+     > "Your /dev/kvm is group-restricted and the container could not open it. Fix one of: (a) make /dev/kvm 0666 (systemd default; udev rule `KERNEL=="kvm", MODE="0666"`), or (b) add to `~/.config/containers/containers.conf`: `[containers]\nannotations = ["run.oci.keep_original_groups=1"]` and restart `podman.socket` (needed on Podman < 5.7, where the per-container annotation is ignored)."
+3. If not `usable()`: follow §8.2.
+
+### 9.7 Screens, VNC, screenshots, keyboard (R6, R9)
+
+```java
+public interface VmScreen {
+  int index();
+  VncEndpoint vnc();                       // host, mapped port, Optional<String> password  → for library users' viewers
+  BufferedImage screenshot();              // QMP screendump {filename:/vm/out/shot-<uuid>.png, device:"video<i>", format:"png"} → copyFileFromContainer
+  void screenshot(Path hostPng);
+  ScreenRecording startRecording(Path hostWebm);                         // RecordingOptions.defaults()
+  ScreenRecording startRecording(Path hostWebm, RecordingOptions opts);  // fps (1..30, default 10), bitrate (default 1_000_000)
+  void forceModeset();                     // copies vmtc-fb-activate.py into the guest and runs it on /dev/fb<i> (§7.3); for console-only guests
+}
+public record VncEndpoint(String host, int port, Optional<String> password) { String uri(); } // "vnc://host:port"
+public interface KeyboardInput {            // container.keyboard()
+  void type(String text);                  // US layout mapping, verified table in spike typekeys.py [V]
+  void press(String... qcodes);            // QMP send-key, e.g. press("ctrl","alt","f2")
+}
+```
+
+- **Screenshots:** PNG; dimensions are the head's current mode **[V]**.
+- **Keyboard:** `send-key` goes to the active console. The mapping table must be copied from `vm-testcontainer/container/spike/typekeys.py` (letters, digits, US punctuation with shift) **[V]**. Characters outside the table throw `IllegalArgumentException`.
+
+### 9.8 Screen recording (R8)
+
+- `ScreenRecording` is `AutoCloseable`. `close()` stops the recording and copies `/vm/out/<name>.webm` to the host path, then returns.
+  - `<name>` = `screen<i>-<uuid8>`.
+  - Accessors: `Path file()`, `Duration duration()`, `int width()`, `int height()`, all from `VMTC_REC_OK`.
+- **Start:** `execInContainer("vmtc-rec","start",name,i,fps,bitrate)`, with env `VNC_PASSWORD` if configured. Expect `VMTC_REC_STARTED`.
+- **Stop:** `execInContainer("vmtc-rec","stop",name,"10")`.
+  - `VMTC_REC_OK` → success.
+  - `VMTC_REC_INVALID` → `RecordingException` with the log tail.
+  - `VMTC_REC_KILLED` followed by OK → success with a WARN.
+- **Concurrency:** any number of screens may record at once. A second recording on the same screen is allowed (separate VNC clients **[V]** under `force-shared`).
+- **On the slim image:** throw `UnsupportedOperationException`. Detect the variant from the image label `${LABEL_PREFIX}.variant`.
+- **When the container stops while recordings are open:** `containerIsStopping` stops every open recording first (best effort).
+
+### 9.9 Audio recording (R7, separate WAV)
+
+1. `startAudioRecording(path)`: HMP `wavcapture /vm/out/audio-<uuid8>.wav snd0 44100 16 2`.
+2. Parse `info capture` to find the new capture index *n*; the output looks like `[n]: Capturing audio(44100,16,2) to <path>: <bytes> bytes` **[V]**.
+3. `close()`: HMP `stopcapture <n>`, then copy the file out and validate it (RIFF header, data > 0 bytes).
+4. Only one capture at a time; otherwise `IllegalStateException`.
+
+Guest requirement: the mixer must be unmuted (§10.1). If a capture comes back all zeros, the javadoc points to that requirement.
+
+### 9.10 Hot-plug (R10)
+
+```java
+public final class Devices {
+  static DeviceSpec usbStorage(Path hostImage, boolean readOnly);   // raw or qcow2
+  static DeviceSpec usbKeyboard(); static DeviceSpec usbTablet(); static DeviceSpec usbMouse();
+  static DeviceSpec virtioDisk(Path hostImage, boolean readOnly);   // on a free pcie-root-port
+  static DeviceSpec nic(String macOrNull);                          // user-mode netdev
+  static DeviceSpec cpu();                                          // KVM only (TCG → UnsupportedOperationException)
+  static DeviceSpec memory(int sizeMiB);                            // pc-dimm
+  static DeviceSpec newBlankDisk(String size, DiskBus bus);         // qemu-img create inside the container (USB|VIRTIO)
+}
+public interface HotplugHandle extends AutoCloseable { String id(); void unplug(Duration timeout); void close(); }
+public interface CdromDrive { void insert(Path hostIso); void eject(); }
+```
+
+Every QMP sequence below is **[V]** (CI `hotplug_*`, `cdrom_media_change`):
+
+| Spec | Plug | Unplug |
+|------|------|--------|
+| usbStorage | copy image into `/vm/run/hp-<id>.img` (`copyFileToContainer`) → `blockdev-add {driver:<fmt>, node-name:n-<id>, read-only, file:{driver:file, filename}}` → `device_add {driver:usb-storage, id, bus:"xhci.0", drive:n-<id>}` | `device_del {id}` → wait until `id ∉ qom-list /machine/peripheral` → `blockdev-del {node-name}` |
+| usbKeyboard/Tablet/Mouse | `device_add {driver:usb-kbd\|usb-tablet\|usb-mouse, id, bus:"xhci.0"}` | `device_del` + wait |
+| virtioDisk | as usbStorage but `device_add {driver:virtio-blk-pci, id, bus:"hp<k>", drive}` (k = lowest free root port) | as usbStorage |
+| nic | `netdev_add {type:user, id:nd-<id>}` → `device_add {driver:virtio-net-pci, id, bus:"hp<k>", netdev, mac?}` | `device_del` + wait → `netdev_del` |
+| cpu | `query-hotpluggable-cpus` → first entry without `qom-path` → `device_add {driver:<type>, id, ...props}` | not supported (throws) |
+| memory | `object-add {qom-type:memory-backend-ram, id:mem-<id>, size}` → `device_add {driver:pc-dimm, id, memdev}` | not supported (throws). Unplugging DIMMs needs guest cooperation and is out of scope |
+| cdrom.insert | copy ISO to `/vm/run/cd-<id>.iso` → `blockdev-change-medium {id:"cd0", filename, format:"raw", read-only-mode:"read-only"}` | `eject {id:"cd0", force:true}` |
+
+Rules:
+
+- The wait for removal polls every 250 ms, default timeout 30 s (×factor). On timeout, throw `HotplugTimeoutException("guest did not release <id>")`.
+- `id` = `hp-<counter>`. Root-port allocation is tracked in Java; when none is free, throw `IllegalStateException`.
+- Measured guest visibility: USB ≤ 3.2 s, PCIe ≤ 0.4 s, CPU and memory ≤ 0.4 s (KVM) **[V]**.
+
+### 9.11 Error model
+
+| Exception | Raised when |
+|-----------|-------------|
+| `KvmUnavailableException` | `REQUIRE` and no usable KVM |
+| `GuestAgentTimeoutException` | QGA never answers; message includes the serial-log tail |
+| `GuestCommandDisabledException` | the RPC filter blocks a command (§10.1) |
+| `GuestAgentConfinedException` | the SELinux domain is enforcing (§10.1) |
+| `GuestExecTimeoutException` | an exec runs past its timeout |
+| `QmpException` | QMP returned an error: class + desc |
+| `RecordingException` | a recording file is invalid |
+| `HotplugTimeoutException` | the guest did not release an unplugged device |
+| `ImageChecksumException` | a downloaded image's SHA-256 did not match |
+
+Every exception is unchecked and extends `VmtcException`.
+
+### 9.12 Cleanup without Ryuk
+
+- **Rootless Podman:** Ryuk must be disabled (`TESTCONTAINERS_RYUK_DISABLED=true`) **[V]**.
+- **Orphan cleanup:** `VmtcCleanup.removeOrphans()` removes containers labelled `${LABEL_PREFIX}.managed=true` whose `${LABEL_PREFIX}.session` differs from the current JVM's **and** whose age is > 1 h.
+  - It runs once per JVM on first `start()`.
+  - Disable it with `-D${SYSPROP_PREFIX}.cleanup=false`.
+
+### 9.13 `${ART_JUNIT}` extension (optional module)
+
+- `@VmTest` registers an extension. When a test fails, it saves the following to `build/vm-artifacts/<test>/`:
+  - the serial log;
+  - one screenshot per screen;
+  - the recordings in progress.
+- If the repo also uses the earlier `LoggingAttachmentExtension`, it can attach these files. That integration is out of scope.
 
 ---
 
-## 11. Project layout
+## 10. Guest contract and reference guest image
 
-The repo is currently a single-module Maven project (`scratch-notes`). **Decided:** convert it to a multi-module build. The existing code moves into its own child module, or stays in the root as decided at implementation time.
+### 10.1 Guest requirements (normative)
 
+| # | Requirement | How (Rocky/RHEL family) | Detected by |
+|---|-------------|-------------------------|-------------|
+| G1 | x86-64 Linux with virtio-blk, virtio-net, virtio-serial | standard | boot |
+| G2 | `qemu-guest-agent` running on `org.qemu.guest_agent.0` | preinstalled in Rocky GenericCloud **[V]** | `guest-ping` |
+| G3 | exec and file RPCs allowed | `sed -i 's/^FILTER_RPC_ARGS=.*/FILTER_RPC_ARGS=""/' /etc/sysconfig/qemu-ga && systemctl restart qemu-guest-agent` **[V]** | `guest-info` (§9.2 step 11) |
+| G4 | QGA SELinux domain permissive | `semanage permissive -a virt_qemu_ga_t` **[V]** | `id -Z` + read test (§9.2 step 12) |
+| G5 | Serial console on ttyS0 | `console=ttyS0` (GenericCloud default) | serial log non-empty |
+| G6 | Audio tests: `alsa-utils`, mixer unmuted | `dnf install alsa-utils; amixer -c 0 sset Master 90% unmute` (ignore a missing `PCM`) **[V]** | audio test |
+| G7 | Multi-screen tests on console-only guests | `VmScreen.forceModeset()` (§9.7) | — |
+
+### 10.2 Cloud-init seed (`CloudInitSeed`)
+
+`CloudInitSeed.forReferenceGuest()` produces the verified seed (`make-seed.sh` **[V]**):
+
+```yaml
+#cloud-config
+runcmd:
+  - sed -i 's/^FILTER_RPC_ARGS=.*/FILTER_RPC_ARGS=""/' /etc/sysconfig/qemu-ga
+  - semanage permissive -a virt_qemu_ga_t
+  - systemctl enable qemu-guest-agent
+  - systemctl restart qemu-guest-agent
+  - amixer -c 0 sset Master 90% unmute || true
+  - echo VMTC_SEED_DONE > /dev/ttyS0
 ```
-scratch-notes/
-├─ pom.xml                         (becomes <packaging>pom</packaging> aggregator — decided)
-├─ vm-testcontainer/
-│  ├─ pom.xml
-│  ├─ container/
-│  │  ├─ Containerfile             (UBI 9.8 + repos + qemu)
-│  │  ├─ Containerfile.media       (FROM runner + ffmpeg-free)
-│  │  ├─ repos/epel.repo, rocky-9.8.repo
-│  │  └─ scripts/vm-entrypoint.sh, vm-recorder.sh, mk-seed-iso.sh
-│  ├─ guest/
-│  │  └─ build-guest-image.sh      (virt-customize recipe → containerDisk)
-│  └─ src/
-│     ├─ main/java/io/github/nhwalker/vmtc/...   (QemuVmContainer, qmp/, qga/, image/, media/, hotplug/)
-│     └─ test/java/...                            (unit + integration)
-└─ docs/vm-testcontainer/PLAN.md   (this file)
-```
 
-Image build:
+The builder supports:
+- `packages(String...)`, which becomes `dnf -y install …; echo DNF_RC=$? > /dev/ttyS0` and requires guest network;
+- `runcmd(String...)`;
+- `writeFile(path, content)`;
+- `rootPassword(String)`, for console debugging.
 
-- `podman build` is driven by a Maven profile (`exec-maven-plugin`) or by a script.
-- Tests can alternatively use Testcontainers' `ImageFromDockerfile` so they need no pre-built image. It works with Podman's compat API, **L**.
+`meta-data` is `instance-id: <uuid>` plus `local-hostname: vm`.
+
+**Startup:** when a seed is configured, `start()` additionally waits for `VMTC_SEED_DONE` in the serial log (timeout = guest-agent timeout) before returning.
+
+**Timings [V]:**
+
+| Seed | Accel | Time to done |
+|------|-------|--------------|
+| Offline seed (no packages) | TCG | 281 s |
+| With `dnf install alsa-utils` | KVM | about 100 s |
+| With `dnf install alsa-utils` | TCG | about 480–670 s |
+
+That is why the pre-baked guest (§10.3) is the default for tests.
+
+> **CI note [V]:** in one KVM run, `dnf` reported failure even though `alsa-utils` did get installed. The seed now logs `DNF_RC` and the dnf tail. Treat `DNF_RC≠0` as a WARN, not a failure, and verify the package instead.
+
+### 10.3 Reference guest image `${IMAGE_GUEST}` (D3)
+
+**Build (`images/guest/customize.sh`, run by the Gradle task `buildGuestDisk`):**
+
+1. Download `${GUEST_BASE_URL}` and verify `${GUEST_BASE_SHA256}`.
+2. Boot it **once** in the runner image (KVM if available) with a seed whose runcmd:
+   - applies G3, G4 and G6 (installs `alsa-utils`);
+   - runs `cloud-init clean --logs` and `truncate -s0 /etc/machine-id`;
+   - finishes with `poweroff`.
+3. Wait for QEMU to exit. The result is the overlay.
+4. Flatten the overlay: `qemu-img convert -O qcow2 -c overlay.qcow2 rocky9-vmtc.qcow2`.
+5. Package it as a containerDisk:
+
+   ```dockerfile
+   FROM scratch
+   ADD --chown=107:107 rocky9-vmtc.qcow2 /disk/rocky9-vmtc.qcow2
+   ```
+
+6. Tag `${IMAGE_GUEST}:${VERSION}`.
+
+This approach reuses only verified mechanisms: seed, boot and qemu-img. No libguestfs or `virt-customize` is needed; their availability on UBI is **[U]**.
+
+Tests then use `VmImage.fromContainerDisk(${IMAGE_GUEST}:${VERSION})` with **no** seed, so the guest is ready at QGA-ready time (about 12 s under KVM).
 
 ---
 
-## 12. Testing strategy
+## 11. Build (Gradle) details
 
-| Level | What | Needs |
-|-------|------|-------|
-| Unit | QMP and QGA codecs, chunking, base64, event correlation, `HotplugHandle` state machine | Fake socket servers (in-JVM) |
-| Container smoke | Image builds; `qemu-kvm -version`; `-accel help` contains `tcg`; `-device help` contains expected devices; `ffmpeg -encoders` contains `libvpx` | Podman |
-| Integration (TCG) | Boot the reference guest under TCG; exec; copy; screenshot; audio; record; hot-plug | Podman, ~2–4 GB RAM, **slow** |
-| Integration (KVM) | Same suite with `KvmMode.REQUIRE` | Podman + `/dev/kvm` |
+### 11.1 Conventions
 
-- JUnit 5 tags: `@Tag("container")`, `@Tag("vm-tcg")`, `@Tag("vm-kvm")`.
-- `Assumptions` skip a suite when Podman or KVM is absent.
-- **Media assertions:**
-  - PNG decodes with non-zero dimensions.
-  - WAV header is valid with duration greater than 0.
-  - For audio *content*, generate a known tone in the guest and check its RMS or dominant frequency with a small FFT. That is a stretch goal.
-  - The WebM is probed with `ffprobe`, and its frame count is checked.
+- Java toolchain `${JAVA_RELEASE}`. `-Werror` on javac lint `all,-processing`. Spotless (google-java-format) is optional; adopt whatever the target repo already uses.
+- Unit tests use JUnit 5 and need no container engine.
+- Integration tests live in `:it`. They are tagged and run by a separate `integrationTest` task that depends on `:images:buildRunnerSlim`, `:images:buildRunnerMedia` and `:images:buildGuestDisk`.
 
----
+### 11.2 `:images` tasks
 
-## 13. Phased delivery plan
+| Task | Command |
+|------|---------|
+| `buildRunnerSlim` | `podman build -f images/runner/Containerfile --build-arg VARIANT=slim --build-arg VERSION=${VERSION} --build-arg LABEL_PREFIX=${LABEL_PREFIX} -t ${IMAGE_RUNNER}:${VERSION}-ubi9.8 images/runner` |
+| `buildRunnerMedia` | same as above with `VARIANT=media`, tagged `…-ubi9.8-media` |
+| `verifyRunnerImages` | the checks in §6.4 |
+| `buildGuestDisk` | `images/guest/customize.sh` (§10.3) → `${IMAGE_GUEST}:${VERSION}` |
+| `pushImages` | `podman push` all three tags; only when `-PpushImages=true` |
 
+Each task is an `Exec` with declared inputs (the `images/**` files and `gradle.properties`), so it is up-to-date aware. The engine CLI comes from `-PcontainerEngine=podman`, default `podman`.
+
+### 11.3 Generated constants
+
+`:lib:generateConstants` writes `build/generated/sources/vmtc/${BASE_PACKAGE path}/VmtcConstants.java` from `gradle.properties`:
+
+```java
+public final class VmtcConstants {
+  public static final String VERSION = "${VERSION}";
+  public static final String LABEL_PREFIX = "${LABEL_PREFIX}";
+  public static final String SYSPROP_PREFIX = "${SYSPROP_PREFIX}";
+  public static final String ENV_PREFIX = "${ENV_PREFIX}";
+  public static final String CACHE_DIR_NAME = "${CACHE_DIR_NAME}";
+  public static DockerImageName defaultRunnerImage(RunnerVariant v) { … "${IMAGE_RUNNER}:" + VERSION + "-ubi9.8" + (v==MEDIA?"-media":"") }
+  public static DockerImageName referenceGuestImage() { … "${IMAGE_GUEST}:" + VERSION }
+}
 ```
-Phase 0  Spikes (de-risk)      ──► Phase 1  Core VM        ──► Phase 2  Media & hot-plug  ──► Phase 3  Polish
- repo mixing, device list,          container, QMP, QGA,         screenshots, audio,            SSH fallback,
- slirp/passt, wavcapture+none,      exec, copy, fromPath/        screen recording,              classpath images,
- keep-groups via API, ffmpeg        fromUrl, KVM/TCG             hot-plug, containerDisk        docs, CI recipes
- codecs, guest image                                             baked images
-```
 
-### Phase 0 — Spikes (each has a yes/no exit criterion)
-
-1. **UBI 9.8 + Rocky 9.8 repo mix:** `dnf install qemu-kvm-core qemu-img` succeeds on `ubi9/ubi:9.8` with Rocky at priority 90 and `rocky-release` excluded.
-   - Record which dependencies came from Rocky.
-   - Confirm `rpm -V` is clean and no UBI package was replaced.
-2. **Device allow-list:** capture `/usr/libexec/qemu-kvm -device help` and confirm the needed devices exist:
-   - `virtio-vga`, `qemu-xhci`, `usb-storage`, `usb-kbd`, `usb-tablet`, `pcie-root-port`, `virtio-blk-pci`, `virtio-net-pci`, `virtserialport`, `pc-dimm`.
-3. **Networking:** is `-netdev user` (slirp) available? If not, does passt work in the container?
-4. **Audio:** does `wavcapture` work with `-audiodev none`? If not, choose a backend per §6.4.
-5. **Podman compat API:**
-   - Do `/dev/kvm` device mapping, `GroupAdd: ["keep-groups"]` and the annotation fallback take effect through the docker-java socket?
-   - Run this both rootless and rootful.
-6. **ffmpeg-free on UBI + EPEL:** does it install? Which CRB packages come from UBI CRB, and which need Rocky CRB? Is `libvpx-vp9` listed among the encoders?
-7. **Reference guest:** build the Rocky 9 GenericCloud-based guest with QGA (exec allowed) and record its boot time under KVM and TCG.
-
-**Status (2026-10-18):**
-
-| Spike | Result |
-|-------|--------|
-| #1 | **PASS** |
-| #2 | **Answered.** `virtio-vga` and `virtio-sound-pci` are missing; everything else needed is present |
-| #3 | **Answered.** Both slirp and passt are available |
-| #6 | **Answered.** VP9 and Opus are available; H.264 is a stub |
-| #4 | **PASS.** `wavcapture` works with the `none` backend |
-| #7 | **PASS.** Rocky 9.8 GenericCloud boots under TCG; QGA is ready in ~85 s. **New requirement:** relax QGA's SELinux domain |
-| Extra | Screen recording, keyboard `send-key` and USB hot-plug verified in the same VM |
-| #5 | Open; needs a Podman host |
-
-Details are in `vm-testcontainer/container/spike/RESULTS.md`.
-
-**Exit criteria:**
-
-- All spikes are green or have a decided fallback.
-- §2 and §14 are updated with the results.
-
-### Phase 1 — Core
-
-- Containerfile (slim) and entrypoint; KVM/TCG selection; overlay creation.
-- `QemuVmContainer` with ports, wait strategy and serial log.
-- `QmpClient`, `GuestAgentClient`, `exec`, `copyToVm`, `copyFromVm`.
-- `VmImage.fromPath`, `VmImage.fromUrl`, and the cache.
-- Unit tests and the TCG integration suite.
-
-### Phase 2 — Media & hot-plug
-
-- `screenshot`.
-- `startAudioRecording`.
-- Media image, `vm-recorder.sh`, `startScreenRecording`, and the pure-Java fallback.
-- `Devices` and `hotplug` for USB storage, USB HID, virtio-blk, NIC and CD media change.
-- `VmImage.fromContainerDisk` and `VmImage.baked()`; the guest image build recipe.
-
-### Phase 3 — Polish
-
-- Optional SSH exec and copy.
-- Cleanup tooling for leftover containers when Ryuk is off.
-- Documentation and CI examples (GitHub Actions, with and without KVM).
-- Optional cloud-init seed ISO path for stock cloud images.
+The runner and guest images can be overridden at run time with `-D${SYSPROP_PREFIX}.runnerImage` / `-D${SYSPROP_PREFIX}.runnerImageMedia`.
 
 ---
 
-## 14. Risks & open questions
+## 12. CI
 
-### Risks
+### 12.1 Workflow (GitHub Actions; derived from the verified spike workflow)
 
-| # | Risk | Impact | Mitigation |
-|---|------|--------|-----------|
-| K1 | **Rocky packages on a UBI base**: dependency conflicts, or replacing UBI packages | **Mitigated:** spike #1 passed (2026-10-18). Remaining risk: future Rocky or UBI point updates drifting apart | Pin to 9.8, priorities, `excludepkgs`, Phase 0 spike #1. Fallback: base the image on `rockylinux:9.8`. That violates R2, so **it needs your approval** |
-| K2 | **Licensing / redistribution** of an image that mixes UBI and Rocky/EPEL content | Can't publish the image publicly | Needs a legal/policy check against the UBI EULA. **Not assessed in this plan**; I can't give an authoritative answer |
-| K3 | Red Hat says direct `qemu-kvm` use and TCG are **unsupported** | No vendor support | Accept for test infrastructure; document |
-| K4 | TCG is very slow | Long or flaky CI | `tcgTimeoutFactor`, small guests, prefer KVM runners |
-| K5 | QGA is slow for big files | Slow tests | Disk-attach path (§6.2); SSH fallback |
-| K6 | Guest images block QGA exec/file by default, **and SELinux confines exec'd commands** | "Nothing works" for new users | Detect `CommandNotFound` + "has been disabled" and report how to fix it. Detect `id -Z` = `virt_qemu_ga_t` at connect time and warn. Guest recipe; cloud-init seed |
-| K7 | docker-java can't express Podman-only mounts (`image`, `artifact`) | containerDisk via mount is unavailable | Extract to the cache with the `podman` CLI (§7.2) |
-| K8 | Exposed QMP and QGA ports give full VM control | Local privilege surface | Bind to loopback only (Testcontainers default host IP); document |
-| K9 | RHEL device allow-list missing something needed (e.g. a VGA type or USB device) | Feature gap | Spike #2; document unsupported devices |
+- **Jobs:**
+  - `unit` on ubuntu-24.04;
+  - `integration` with matrix `{ubuntu-24.04 + kvm, ubuntu-24.04 + tcg, ubuntu-26.04 + kvm}`;
+  - `compat` (the §9.6 scenarios, kept as a regression probe).
+- **Steps for `integration`** (all **[V]** in `.github/workflows/vm-testcontainer-spikes.yml`):
+  1. If accel=kvm, add the udev rule (`KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"`), then `udevadm control --reload-rules && udevadm trigger --name-match=kvm`.
+  2. Start `podman system service --time=0 unix://$XDG_RUNTIME_DIR/podman/podman.sock &`.
+  3. Export `DOCKER_HOST=unix://$XDG_RUNTIME_DIR/podman/podman.sock` and `TESTCONTAINERS_RYUK_DISABLED=true`.
+  4. Cache `~/.cache/${CACHE_DIR_NAME}`, keyed by `${GUEST_BASE_SHA256}` + `${VERSION}`.
+  5. Run `./gradlew integrationTest -Pvmtc.accel=<kvm|tcg>`.
+  6. Upload `build/vm-artifacts/**` and the test reports.
+- **Timeouts:** 30 min for KVM jobs, 90 min for TCG.
 
-### Decisions (2026-10-18)
+### 12.2 Expected durations [V]
 
-| Topic | Decision |
-|-------|----------|
-| Branch | Plan lives on `claude/vm-testcontainer-plan-lqhfa6` (session restriction); rename/merge as desired |
-| K1 fallback (UBI + Rocky mix fails) | Spike #1 **passed**, so no fallback is needed now. Re-evaluate if it breaks later |
-| Image variants | **Slim runner + `-media` variant** (ffmpeg-free only in media) |
-| Module placement | **Multi-module**: root `pom.xml` becomes aggregator; `vm-testcontainer` is a child module |
-| Guest OS scope | **Linux guests only** (v1 and beyond unless revisited) |
-| Reference test guest | **Rocky 9** (x86-64 GenericCloud base, customized with QGA exec/file RPCs allowed) |
+| Job | Duration |
+|-----|----------|
+| Image build | about 1 min each |
+| Guest disk build | about 2–3 min (KVM) |
+| KVM integration suite | about 3–5 min |
+| TCG integration suite | about 15–20 min |
 
-### Still open
+### 12.3 Parameter-hygiene check
 
-1. **K2 licensing** check for publishing a UBI + Rocky/EPEL mixed image.
+A CI step greps the repo for each *example value* in §0 (as configured in `gradle.properties`). It fails if any value appears outside the files in the "Lives in" column.
 
 ---
 
-## 15. In Summary
+## 13. Test plan and acceptance criteria
 
-- **Design:** a Podman container on UBI 9.8 runs `/usr/libexec/qemu-kvm` from Rocky 9.8 AppStream.
-  - Java controls the VM through **QMP** (screenshots, audio capture, hot-plug) and the guest through **QGA** (exec, file copy). Both run over TCP ports mapped to loopback.
-- **KVM is optional.** `/dev/kvm` is passed through when it is usable; otherwise TCG is used. TCG has been verified working on the RHEL/Rocky 9.8 build. Expect it to be much slower.
-- **Every requirement has a concrete mechanism.** The RHEL QEMU build's limits (no SPICE, no usb-audio, unsupported CLI use) are known and designed around:
-  - Screenshots: QMP `screendump` PNG.
-  - Audio: `wavcapture` on the `none` backend with Intel HDA (verified in spike #4).
-  - Screen recording: a screendump frame loop encoded by EPEL `ffmpeg-free` (VP8/VP9 WebM), with a pure-Java fallback.
-  - Hot-plug: QMP `device_add` / `device_del` with pre-provisioned xhci and PCIe root ports.
-- **VM image supply:** a single runtime path, *read-only base bind mount + per-run qcow2 overlay*.
-  - Front-ends: host path, URL+sha256 cache, KubeVirt-style containerDisk (pulled and extracted into the cache), or a baked image for CI.
-- **Do first:** Phase 0 spikes.
-  - The UBI + Rocky repo mix (K1) is the riskiest item.
-  - Others: the device allow-list, slirp vs passt, `wavcapture` with the `none` backend, `/dev/kvm` group handling through Podman's compat API, ffmpeg-free codecs, and a reference guest.
-- **Decided:** slim + media images, multi-module build.
-- **Spikes #1–#4, #6, #7 passed or answered:** exec, file copy, screenshot, audio capture, screen recording, keyboard input and USB hot-plug all work end to end on a Rocky 9.8 guest under TCG.
-- **New guest requirement:** on SELinux guests, the QGA domain must be permissive (`semanage permissive -a virt_qemu_ga_t`).
-- **Remaining test:** #5, Podman rootless with `/dev/kvm` through the compat API.
-- **Also decided:** Linux guests only; Rocky 9 is the reference test guest.
-- **Still open (§14):** the licensing check (K2).
+Each item maps to a verified spike check (`ci_spikes.py`) and must pass under KVM. Under TCG, everything except `hotplug_cpu` must pass.
+
+| ID | Test (`:it`) | Acceptance |
+|----|--------------|------------|
+| T1 | `accelKvm` / `accelTcg` | `accelerator()` matches mode; `query-kvm.enabled` agrees |
+| T2 | `bootToAgent` | QGA ready ≤ 30 s (KVM) / ≤ 180 s (TCG) with the reference guest |
+| T3 | `execBasics` | `uname -m` = `x86_64`; exit code 3, stdout and stderr preserved |
+| T4 | `copyRoundTrip` | 5 MB and 50 MB SHA-256 equal both ways |
+| T5 | `screenshotEachScreen` | n=2: PNG decodes; head 0 is 1280×800 (Rocky console), head 1 is 640×480 before `forceModeset()` and 1280×800 after |
+| T6 | `vncExposed` | for each screen, a raw RFB handshake from the host to `vnc().host():port()` returns version `RFB 003.008`; with a password set, security types = [2] |
+| T7 | `vncPasswordRejectsWrong` | `rfbsrc` with a wrong password logs "Authentication failed" |
+| T8 | `recordTwoScreens` | 12 s recording: each WebM is VP8, \|duration − wall\| < 1 s, width 1280; stop ≤ 2 s |
+| T9 | `recordingSurvivesExclusiveClient` | an exclusive (`shared=0`) client connects during recording; recording still valid |
+| T10 | `recordStaticScreen` | 10 s with no screen change still yields duration ≥ 9 s |
+| T11 | `audioTone` | guest `speaker-test -t sine -f 1000 -l 1` → WAV 44.1 kHz/16/2, RMS > 100, dominant 900–1100 Hz |
+| T12 | `keyboardType` | console login via `type()`, then a typed command writes a marker to `/dev/ttyS0` |
+| T13 | `hotplugUsbStorage`, `hotplugUsbHid` | guest sees `usb` disk / input device; unplug removes it |
+| T14 | `hotplugVirtioDisk`, `hotplugNic` | new `vdX` / new interface; unplug removes it |
+| T15 | `cdromInsertEject` | `blkid /dev/sr0` shows the label; mounted content matches; eject removes the media |
+| T16 | `hotplugCpu` (KVM only) | `nproc` +1 |
+| T17 | `hotplugMemory` | MemTotal grows by > 400 MiB |
+| T18 | `imageSources` | `fromPath`, `fromUrl` (served by a local `HttpServer`), `fromContainerDisk`, `baked()` all boot; the cache is hit on the second run (no download) |
+| T19 | `guestNotPrepared` | stock Rocky image without seed → `GuestCommandDisabledException`; with only G3 → `GuestAgentConfinedException` |
+| T20 | `kvmRequireWithoutKvm` | `REQUIRE` on a TCG runner → `KvmUnavailableException` |
+| T21 | `orphanCleanup` | labelled container from a fake older session gets removed |
+| T22 | `uefiBoot` | `VM_FIRMWARE=uefi` reaches QGA |
+
+**Unit tests (no engine):**
+- QMP and QGA codecs against an in-JVM fake server: sync-delimited `0xFF` handling, chunking, base64, timeouts, event skipping.
+- Cache locking and atomic moves.
+- Keyboard mapping table.
+- Constants generation.
+
+---
+
+## 14. Implementation milestones
+
+| M | Content | Exit criteria |
+|---|---------|---------------|
+| M1 | Gradle skeleton (§5, §11); runner images (§6, §7); `QemuVmContainer` start/stop, QMP, QGA, exec, copy, `fromPath`, KvmMode | T1–T4, T20 green on KVM and TCG; §6.4 checks pass |
+| M2 | Screens, VNC endpoints, password, screenshots, keyboard, `forceModeset`, UEFI | T5–T7, T12, T22 |
+| M3 | Image sources (`fromUrl`, `fromContainerDisk`, `baked`), cache, reference guest image build, cloud-init seed | T18, T19 |
+| M4 | Recording (media image), audio | T8–T11 |
+| M5 | Hot-plug API | T13–T17 |
+| M6 | JUnit extension, orphan cleanup, docs, CI hardening, §12.3 hygiene check | T21; all jobs green |
+
+---
+
+## 15. Limits, risks, open items
+
+| # | Item | Impact | Handling |
+|---|------|--------|----------|
+| L1 | vCPU hot-plug under TCG: device added but guest never sees it (3/3 runs, root cause unknown) | `Devices.cpu()` unusable without KVM | Throw `UnsupportedOperationException` under TCG |
+| L2 | Secondary screens dark until the guest modesets them | Recording/screenshot of a 640×480 placeholder | Document; `forceModeset()` for console guests |
+| L3 | VNC auth ≤ 8-char passwords (RFB) | Weak auth | Default bind 127.0.0.1; password only as a guard against accidents |
+| L4 | No H.264/AV1 encoders | WebM/VP8 only | Accept (VP8 plays in browsers and VLC) |
+| L5 | Red Hat: direct qemu-kvm use and TCG unsupported | No vendor support | Accept for test infrastructure |
+| R1 | Mixing Rocky RPMs into UBI | Future point releases could conflict | Pin `${ROCKY_RELEASE}`; build-time guard (§6.3); CI rebuild weekly |
+| R2 | **Licensing / redistribution** of a published image mixing UBI with Rocky and EPEL content | May block publishing `${IMAGE_RUNNER}` publicly | **Not assessed. Needs a legal/policy decision before `pushImages` to a public registry** |
+| R3 | SELinux-enforcing hosts (Fedora/RHEL): `:z` relabel of cache files, `container_use_devices` for `/dev/kvm` | Not testable on GitHub runners (AppArmor) | Acceptance test on a Fedora/RHEL host before 1.0 **[U]** |
+| R4 | `/dev/kvm` `0660` hosts | Needs the keep-groups annotation; Podman 4.9 needs it in `containers.conf` | §9.6: annotation + detection + remediation [V] |
+| R5 | UEFI firmware paths | — | T22 in M2 |
+| R6 | ubuntu-26.04 runner is public preview | CI label may change | Keep 24.04 as the primary |
+
+---
+
+## 16. Assumptions to confirm
+
+1. §0 values (coordinates, package, registry) are examples; replace them at adoption.
+2. `${GRADLE_VERSION}` and `${JACKSON_VERSION}` are believed current but were not checked against release pages. Verify when adopting.
+3. Max screens = 4 and default hot-plug ports = 4 are design choices, not limits found by testing (only 2 screens and 4 ports were exercised).
+4. The `${ART_JUNIT}` module is optional; drop it if not wanted.
+5. Publishing images publicly depends on R2.
+
+---
+
+## 17. Evidence index
+
+All in this repository on branch `claude/vm-testcontainer-plan-lqhfa6` (PR #9).
+
+| Evidence | Location |
+|----------|----------|
+| Spike write-ups (packaging, audio, SELinux, GStreamer, multi-screen) | `vm-testcontainer/container/spike/RESULTS.md` |
+| Verified reference scripts | `vm-testcontainer/container/spike/` (`start-vm.sh`, `make-seed.sh`, `gst-record.sh`, `rec.sh`, `vmctl.py`, `typekeys.py`, `fb-activate.py`, `install-packages.sh`, `repos/`) |
+| End-to-end feature checks | `vm-testcontainer/container/spike/ci_spikes.py` |
+| Compat-API probe | `vm-testcontainer/spike-java/` (`PodmanKvmProbeTest`, `run-scenario.sh`) |
+| CI workflow | `.github/workflows/vm-testcontainer-spikes.yml` |
+| CI runs | see the table below |
+
+| Run | What it showed |
+|-----|----------------|
+| 1 (`39137816568`) | KVM all pass; TCG all pass except vCPU hot-plug; compat probe (Podman 4.9.3) |
+| 2 (`39141980865`) | + ubuntu-26.04 KVM all pass; compat probe on Podman 5.7.0 (scenario B/C harness used `sg`, superseded by run 3/4) |
+| 4 (`39142697864`) | login-session 0660 scenarios A/B/C on Podman 4.9.3 and 5.7.0; containerDisk extraction on both (§3.6, §9.3.3, §9.6) |
+
+---
+
+## 18. In Summary
+
+- **Design:** `QemuVmContainer` runs one QEMU VM per Podman container on a UBI 9.8 runner image. QEMU and `gstreamer1-plugins-good` come from a pinned Rocky 9.8 fallback; `tini` comes from EPEL. Java drives the VM with **QMP** and the guest with **QGA** over loopback-published TCP ports.
+- **Verified end to end** on GitHub-hosted runners with real KVM and with TCG:
+  - exec and file copy;
+  - per-screen screenshots and per-screen VNC (exposed, optionally password-protected);
+  - per-screen GStreamer WebM recording;
+  - WAV audio capture;
+  - keyboard input;
+  - hot-plug of USB, PCIe disk/NIC, CD, memory, and CPU (KVM only).
+- **Images:** every source resolves to a cached read-only base disk plus a per-run overlay. The reference Rocky 9 guest is pre-customized and shipped as a containerDisk, so tests start in about 12 s under KVM.
+- **Hard-won rules:** `tini` as PID 1; `rfbsrc incremental=false`; validate recordings by file, not exit code; `share=force-shared`; per-display `set_password`; guest RPC filter **and** SELinux permissive domain; for a group-restricted `/dev/kvm`, the `run.oci.keep_original_groups=1` annotation (never `GroupAdd keep-groups`).
+- **Still open:**
+  - publishing/licensing of the mixed image (R2);
+  - an SELinux-host acceptance run (R3);
+  - the UEFI firmware path check (R5, T22).
+- **Adoption:** retarget everything by editing **§0 only**.

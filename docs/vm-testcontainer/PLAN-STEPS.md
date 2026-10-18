@@ -653,7 +653,7 @@ Record every place where reality differed from PLAN.md, every [U] outcome, and e
 
 | # | Date | Step | What happened / decision | PLAN.md or REQUIREMENTS.md updated? | Owner / status |
 |---|------|------|--------------------------|-------------------------------------|----------------|
-| 1 | 2026-10-18 | 0.4 | R2 decided: UBI stays (enterprise policy); images go only to a private registry inside the organisation, never public. Residual question for the policy owner: EULA §2 trademark-removal wording vs intra-organisation sharing | PLAN.md §15 R2, §0, §6.4 check 11 | closed (residual: policy owner) |
+| 1 | 2026-10-18 | 0.4 | R2 decided: UBI stays (enterprise policy); images go only to a private registry inside the organisation, never public. Residual question for the policy owner: EULA §2 trademark-removal wording vs intra-organisation sharing | PLAN.md §15 R2, §0, §6.4 check 11 (license label inherited) | closed (residual: policy owner) |
 | 2 | | 0.4 | R3: SELinux-enforcing host acceptance (REQ-DISK-10) | — | open |
 | 3 | | 0.4 | UEFI boot of the reference guest (PLAN.md §8.4, T22); the firmware files are confirmed present | — | open |
 

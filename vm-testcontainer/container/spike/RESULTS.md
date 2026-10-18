@@ -138,3 +138,14 @@ Device setup: `ich9-intel-hda` + `hda-duplex,audiodev=snd0` with `-audiodev none
 - PCIe hot-plug (virtio-blk / NIC on `pcie-root-port`).
 - CD media change.
 - CPU and memory hot-plug.
+
+## End-to-end re-run with the consolidated seed (`make-seed.sh` + `spike47-verify.sh`)
+
+The seed was run on a fresh overlay with no manual steps: relax the RPC filter, add the `semanage permissive` rule, then unmute the mixer.
+
+| Check | Result |
+|-------|--------|
+| QGA ready | 92.1 s (TCG) |
+| cloud-init runcmd done (includes `dnf install alsa-utils`) | 654 s |
+| guest-exec domain | still labelled `virt_qemu_ga_t`, as expected: a permissive domain keeps its label but its denials are not enforced. `aplay -l` now lists `card 0: Intel [HDA Intel]` |
+| wavcapture of the 1 kHz tone | 6.02 s, RMS 11776, ~1000 Hz: **PASS** |

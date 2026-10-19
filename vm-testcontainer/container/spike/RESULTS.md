@@ -377,3 +377,40 @@ users `root` and `vmtc` (password, NOPASSWD sudo), keys generated with `ssh-keyg
 Conclusions for the plan: Bouncy Castle is not needed; Ed25519 needs the small `net.i2p.crypto:eddsa` provider,
 which relocates cleanly (Bouncy Castle would not, being a signed JCE provider); use the synchronous SFTP handle API
 for copies, not `SftpClient.write(String, int)`; relocation works end to end against OpenSSH 9.9.
+
+### Run 31 (`39193236335`, head `3cba0c0`): spikes A + C in CI, `ssh-probe` job, KVM and TCG — **all pass**
+
+Setup: `start-vm.sh` with `VM_PORT_FORWARDS=22:10022` (slirp `hostfwd=tcp:0.0.0.0:10022-:22`), container port 10022 published
+by Testcontainers 2.0.5 to loopback (rootless Podman 4.9.3); MINA SSHD 2.20.0 + `net.i2p.crypto:eddsa` from Java; two
+guests built by `build-guest.sh` from the same base: **reference** (agent + cloud-init kept) and **blackbox**
+(`GUEST_VARIANT=blackbox`: `qemu-guest-agent` removed, `/etc/cloud/cloud-init.disabled`). Both have users `root` and
+`vmtc` (password, three key types, `vmtc` with NOPASSWD sudo), `PermitRootLogin yes`, `PasswordAuthentication yes`.
+
+| Measurement (from container start) | reference KVM | blackbox KVM | reference TCG | blackbox TCG |
+|------------------------------------|---------------|--------------|---------------|--------------|
+| Testcontainers `start()` returned (`QEMU_STARTING` seen) | 8.5 s | 3.3 s | 7.6 s | 3.3 s |
+| TCP connect to the forward succeeds | 8.5 s (**immediately: slirp accepts before the guest listens**) | 3.3 s | 7.7 s | 3.3 s |
+| SSH banner received | 20.5 s | 15.3 s | 91.2 s | 63.9 s |
+| root password auth complete | 21.0 s | 15.7 s | 93.1 s | 65.3 s |
+| exec round trip (`id -un`, warm) | 75–125 ms | 75–110 ms | 0.6–1.1 s (first 5.9 s) | 0.6–1.2 s (first 7.1 s) |
+| SFTP 50 MB put / get (sync handle API, sha OK) | 26.1 / 47.3 MB/s | 26.0 / 53.5 MB/s | 3.9 / 5.5 MB/s | 4.7 / 5.6 MB/s |
+| QGA for comparison (earlier runs) | ready 11–12 s; copy 20 / 46 MB/s | — | ready 47–67 s; copy 1.4–2.8 / 4.8–6.6 MB/s | — |
+
+Checks that passed in all four cells: `vmtc` key auth with ed25519, RSA and ECDSA; `sudo -n id -u` → `0`; env passing via
+`env FOO=bar sh -c …`; **`forceModeset` over SSH + sudo** (`fb-activate.py /dev/fb1` → QMP `screendump video1`
+640×480 → 1280×800); wrong password → `SshException: No more authentication methods available`; the shaded/relocated jar
+run as a separate JVM against the same forward (password, RSA, Ed25519, exec). SELinux stays Enforcing; sshd sessions are
+unconfined, so no G4 workaround is needed for SSH.
+
+Black-box guest facts: `rpm -q qemu-guest-agent` → not installed; `qemu-guest-agent` and `cloud-init` inactive;
+`/etc/cloud/cloud-init.disabled` present; `/dev/virtio-ports/org.qemu.guest_agent.0` still exists (the host-side
+virtio-serial device is unchanged, so an "agent port present" check says nothing about the agent). Build: customize boot
+45 s KVM / 465 s TCG, flatten 47 s, 816 MB qcow2 and containerDisk.
+
+Design consequences recorded for the sub-plan:
+- `Readiness.guestPort(n)` must wait for **application data** (or the SSH banner), not a bare TCP connect: slirp
+  completes the host-side handshake itself, so connect succeeds seconds before sshd listens.
+- SSH readiness is ~2× the agent's on KVM (sshd starts late in boot; the agent is up earlier) and about the same on TCG;
+  SFTP is on par with QGA on KVM and 2–3× faster on TCG.
+- The same `build-guest.sh` seed provisions users/keys/sshd for both variants; cloud-init `ssh_pwauth: true` +
+  `disable_root: false` + the `sshd_config.d` drop-in are what make root password login work on GenericCloud.

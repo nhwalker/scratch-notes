@@ -126,6 +126,7 @@ jobs:
 
       - name: Customize + flatten + package containerDisk
         run: |
+          set -o pipefail
           "$SPIKE_DIR/build-guest.sh" podman "$IMAGE" "$HOME/vm-images/$ROCKY_IMAGE" "$HOME/guest-work" localhost/vmtc-guest:spike kvm \
             2>&1 | tee guest-build.log
 
@@ -255,12 +256,14 @@ jobs:
 
       - name: Build reference guest (with SSH users/keys)
         run: |
+          set -o pipefail
           GUEST_VARIANT=reference SSH_PUBKEY_FILES="$HOME/sshkeys/id_rsa.pub $HOME/sshkeys/id_ecdsa.pub $HOME/sshkeys/id_ed25519.pub" \
             "$SPIKE_DIR/build-guest.sh" podman "$IMAGE" "$HOME/vm-images/$ROCKY_IMAGE" "$HOME/guest-ref" localhost/vmtc-guest:ssh-ref ${{ matrix.accel }} \
             2>&1 | tee guest-build-ref.log
 
       - name: Build BLACK-BOX guest (no qemu-guest-agent, cloud-init disabled)
         run: |
+          set -o pipefail
           GUEST_VARIANT=blackbox SSH_PUBKEY_FILES="$HOME/sshkeys/id_rsa.pub $HOME/sshkeys/id_ecdsa.pub $HOME/sshkeys/id_ed25519.pub" \
             "$SPIKE_DIR/build-guest.sh" podman "$IMAGE" "$HOME/vm-images/$ROCKY_IMAGE" "$HOME/guest-bb" localhost/vmtc-guest:ssh-bb ${{ matrix.accel }} \
             2>&1 | tee guest-build-bb.log

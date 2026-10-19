@@ -9,7 +9,8 @@ set -euo pipefail
 #   password "vmtc", vmtc with NOPASSWD sudo, PermitRootLogin yes, PasswordAuthentication yes.
 E=$1 IMG=$2 BASE=$(readlink -f "$3") WORK=$(mkdir -p "$4" && readlink -f "$4") TAG=$5 ACCEL=${6:-kvm}
 VARIANT=${GUEST_VARIANT:-reference}
-OUT=rocky9-vmtc$([ "$VARIANT" = blackbox ] && echo -blackbox).qcow2
+OUT=rocky9-vmtc.qcow2
+if [ "$VARIANT" = blackbox ]; then OUT=rocky9-vmtc-blackbox.qcow2; fi
 HERE=$(cd "$(dirname "$0")" && pwd)
 mkdir -p "$WORK/run" "$WORK/seed"
 KEYS=""; for f in ${SSH_PUBKEY_FILES:-}; do KEYS+="      - $(cat "$f")"$'\n'; done

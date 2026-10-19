@@ -65,7 +65,7 @@
 **Verify:** `git show --stat HEAD` lists `docs/vm-testcontainer/PLAN.md`, and the commit message has one `<name> <version> <source URL> <date>` line per version row.
 
 ### Step 0.4 — Record open decisions
-- [ ] Open the Deviation log (§D) and confirm its seeded items: §15 R3 (SELinux hosts), the UEFI verification note, the SSH spike results, the closed spike items (§15 R11 sidecar, R12 Shadow, R13 timeout) and the open decisions of PLAN.md §16 items 9–13.
+- [ ] Open the Deviation log (§D) and confirm its seeded items: §15 R3 (SELinux hosts), the UEFI verification note, the SSH spike results, the closed spike items (§15 R11 sidecar, R12 Shadow, R13 timeout) and the five product decisions of PLAN.md §16 items 9–13 (all taken).
 
 **Verify:** §D lists the seeded items with owner "unassigned" or a name.
 
@@ -279,7 +279,7 @@
 
 ### Step 1.14b — SSH transport (`SshTransport`, shaded MINA SSHD)
 - [ ] `internal.transport.SshCommandBuilder` per PLAN.md §9.4.2: single-quoting, `env`, `sudo -n`, `timeout -k 1 <ceil seconds>` (never `--foreground`, never `-s KILL`: PLAN.md §3.10), `execShell` as `/bin/sh -c`; result mapping (`exit-status 124` or a late `exit-signal` → `GuestExecTimeoutException`; other `exit-signal` → `signal`/`−1`); the 16 MiB bounded buffers with truncated flags.
-- [ ] `internal.transport.SshTransport` per PLAN.md §9.4.2 and §9.5: `SshClient.setUpDefaultClient()`, `HostKeyPolicy` → `ServerKeyVerifier` (record the accepted key for `describe()`), password and key identities (`SecurityUtils.loadKeyPairIdentities`), `connect` + `auth` + `exec("true")` as the readiness probe, exec channels per call (`Semaphore(8)`), stdin closed after the last byte even when empty, reconnect once on session I/O errors, SFTP with the **synchronous handle API only** (rule o; `SftpClient.open/write(handle, offset, …)/read`), `chmod` after upload, `close()`. Map MINA's authentication failure to `SshAuthException`.
+- [ ] `internal.transport.SshTransport` per PLAN.md §9.4.2 and §9.5: `SshClient.setUpDefaultClient()`, `HostKeyPolicy` → `ServerKeyVerifier` (record the accepted key for `describe()`), password and key identities (`SecurityUtils.loadKeyPairIdentities`), `connect` + `auth` + `exec("true")` as the readiness probe, exec channels per call (`Semaphore(8)`), stdin closed after the last byte even when empty, reconnect once on session I/O errors, SFTP with the **synchronous handle API only** (rule o; `SftpClient.open/write(handle, offset, …)/read`), `chmod` after upload, the `sudo(true)` copy path through `/tmp/vmtc-<uuid>` + `sudo -n mv`/`cp`/`chown`/`rm` (PLAN.md §9.5), `close()`. Map MINA's authentication failure to `SshAuthException` and expose "this attempt was an authentication rejection" to the readiness loop (fail-fast counter, PLAN.md §9.2 step 10).
 - [ ] Only `internal.transport` may import `org.apache.sshd` (source-level check: `grep -rl 'org.apache.sshd' lib/src/main/java | grep -v internal/transport` prints nothing; `checkParameterHygiene` already greps for it, step 1.4).
 - [ ] **U19 `SshCommandBuilderTest`:** the PLAN.md §13.2 U19 table, evidence `command-table.txt`.
 - [ ] **U20 `ShadedJarTest`** and task `:lib:shadedSmokeTest` per PLAN.md §13.2 U20 (a separate `Test` task whose classpath is the shadow jar + Testcontainers + slf4j only, `dependsOn shadowJar`; `check` depends on it). Evidence `jar-listing.txt`, `security-facts.txt`.
@@ -364,7 +364,7 @@
 **Requirements:** REQ-LIFE-04 (unit part), REQ-LIFE-05 (unit part), REQ-ERR-03 (unit part), REQ-CLN-02 (U16, U17); REQ-ACC-04 (U18)
 
 ### Step 1.21 — `QemuVmContainer`: post-start sequence, exec, copy, stop
-- [ ] `containerIsStarted`: PLAN.md §9.2 steps 8, 10–14 in that order (QMP connect + `VMTC_ACCEL` + PREFER WARN + timeout derivation; seed wait; **readiness dispatch** over `bootOnly`/`guestAgent`/`ssh`/`guestPort` with the `GuestNotReadyException`/`SshAuthException` outcomes; the agent-only RPC-filter and SELinux checks with `describe()`'s `agentChecks`; serial tailer with replay; `timings()` with every key of PLAN.md §9.2; `describe()`/`timings()`/`getLogs()` usable after a failed `start()`).
+- [ ] `containerIsStarted`: PLAN.md §9.2 steps 8, 10–14 in that order (QMP connect + `VMTC_ACCEL` + PREFER WARN + timeout derivation; seed wait; **readiness dispatch** over `bootOnly`/`guestAgent`/`ssh`/`guestPort` with the `GuestNotReadyException`/`SshAuthException` outcomes, including the SSH fail-fast rule (third consecutive rejected authentication after the banner → `SshAuthException` at once); the agent-only RPC-filter and SELinux checks with `describe()`'s `agentChecks`; serial tailer with replay; `timings()` with every key of PLAN.md §9.2; `describe()`/`timings()`/`getLogs()` usable after a failed `start()`).
 - [ ] `internal.SerialLogTailer`, `internal.PortBindings`, `describe()` (incl. access, readiness, forwards, accepted host key), `accelerator()`, `guestAccess()`, `readiness()`, `forwardedPort()`, `qmp()`, `guestAgent()` (`IllegalStateException` unless agent access), `saveSerialLog`.
 - [ ] `exec(String…)`, `exec(Duration, String…)`, `exec(ExecRequest)`, `execShell(String)` delegating to the `GuestTransport` (§9.4), including timeout handling and `GuestExecTimeoutException` for both transports.
 - [ ] `copyToVm(Path|byte[], String)`, `copyFromVm`, `readFromVm` per §9.5 through the transport.
@@ -384,7 +384,7 @@
 **Verify:** `./gradlew :it:integrationTest -P<syspropPrefix>.kvm=DISABLE` runs (zero tests at this point is fine because `failOnNoDiscoveredTests=false`) and the dependency tasks execute.
 
 ### Step 1.23 — M1 integration tests
-- [ ] Write T1, T2, T3, T4, T20, T25, T29, T30, T32, T36, T37, T41 exactly as PLAN.md §13.1 describes (T2/T3/T4/T32 parametrised over transports; T30 with its four cases as four methods; T41 with one container per key type), each extending `VmIT`, annotated with its *Verifies* IDs and tagged `kvm`/`tcg` where stated, attaching the evidence its requirements name. (T40 needs `withScreens(2)`/`forceModeset` and moves to step 2.5.)
+- [ ] Write T1, T2, T3, T4, T20, T25, T29, T30, T32, T36, T37, T41 exactly as PLAN.md §13.1 describes (T2/T3/T4/T32 parametrised over transports, T4 with the extra root-only cases under `sshVmtcSudo`; T30 with its four cases as four methods, (c) choosing 5 s/30 s from the `kvm` property; T41 (a) relying on the fail-fast rule, (b) with one container per key type), each extending `VmIT`, annotated with its *Verifies* IDs and tagged `kvm`/`tcg` where stated, attaching the evidence its requirements name. (T40 needs `withScreens(2)`/`forceModeset` and moves to step 2.5.)
 - [ ] Run on KVM: `./gradlew :it:integrationTest -P<syspropPrefix>.kvm=REQUIRE`.
 - [ ] Run on TCG: `./gradlew :it:integrationTest -P<syspropPrefix>.kvm=DISABLE` (expect ~1–1.5 min per boot; T25 takes 5–8 min under TCG because of the seed). T20 is skipped (assumption) on a host with usable KVM; it is only meaningful in the CI tcg job.
 - [ ] `./gradlew allureReport` and open the report: every test shows under its epic/feature/story with `container.log`, `serial.log`, `vm-config.json`, `timings.json`, `warnings.txt` and its specific evidence; the transport-parametrised tests show one row per transport.
@@ -638,8 +638,8 @@
 ## Phase 6 (M6) — Cleanup, JUnit extension, release readiness
 
 ### Step 6.1 — Orphan cleanup
-- [ ] `VmtcCleanup.removeOrphans()` per PLAN.md §9.12 (returns 0 when `cleanup=false`; all container states; other session; `created` > 1 h; returns the count) and wire it into the step 1.20 seam (`cleanupHook`).
-- [ ] T21 per PLAN.md §13.1 with `containers-before.json` / `containers-after.json`.
+- [ ] `VmtcCleanup.removeOrphans()` per PLAN.md §9.12 (returns 0 when `cleanup=false`; all container states; other session; `created` > 1 h; then unattached labelled networks by the same rule; returns the total count) and wire it into the step 1.20 seam (`cleanupHook`).
+- [ ] T21 per PLAN.md §13.1 (three containers and two networks) with `containers-before.json` / `containers-after.json` / `networks-before.json` / `networks-after.json`.
 
 **Verify:** T21 passes; U17 still passes.
 **Requirements:** REQ-CLN-01, REQ-CLN-02
@@ -707,6 +707,7 @@ Record every place where reality differed from PLAN.md, every [U] outcome, and e
 | 6 | 2026-10-19 | 1.23 | §15 R13 **closed** by spike D: `timeout -s KILL` kills `timeout` itself (exit-signal, no status), `--foreground` leaves grandchildren alive; rule q is now `timeout -k 1 <n>` with exit 124 / late exit-signal mapping. T32 over SSH confirms | PLAN.md §1 rule q, §3.10, §9.4.2 | closed |
 | 7 | 2026-10-19 | 2.5 | `Readiness.guestPort(port, probe)` **verified** in both forms in spike run 34 (HTTP probe answered in 4–5 ms; no-probe form times out on HTTP; a port without a listener gives an immediate EOF, which the loop must treat as "retry") | PLAN.md §3.9, §8.5, §9.2 step 10 | closed |
 | 8 | 2026-10-19 | 0.4 | JPMS: no `module-info.java`; `Automatic-Module-Name` instead (D20), because Testcontainers 2.0.5 is not an automatic module (spike E) | PLAN.md D20, §9.1, §11.1; REQ-BLD-04 | closed |
+| 10 | 2026-10-19 | 0.4 | Product decisions after the review (PLAN.md §16 items 9–13): SSH auth fail-fast after 3 rejections; sudo copies via temp file + `sudo mv/cp`; T30 (c) 5 s KVM / 30 s TCG; cleanup also prunes unattached labelled networks; CI keeps the pull-then-fallback for shipped guests | PLAN.md §9.2, §9.3.3, §9.5, §9.12, §13 T4/T21/T30/T41; REQ-ACC-06/07, LIFE-05, CLN-01 | closed |
 | 9 | 2026-10-19 | 0.4 | Review of 2026-10-19 (three independent reviewers): the three documents lagged the spike results by one commit and contradicted each other in ~120 places (test ↔ requirement traceability, module placement of T34, `copyToVm` under `sudo`, `pgrep -f`, start() unwrapping of `IllegalArgumentException`, …). All document-level findings folded in; product-owner decisions recorded in PLAN.md §16 | all three | closed |
 
 ---

@@ -349,3 +349,31 @@ Observed on ubuntu-24.04 (Podman 4.9.3) for B and C and on ubuntu-26.04 (Podman 
 - **Run 18 (`39169941120`), image-mount boot:** `record_screens` FAIL — `screen1 duration 0.8 vs wall 12.0`; the no-seed boot of the same run and every earlier run passed. The recorder's own log was not part of the artifacts, so the cause is unproven. Prime suspect: the recorder attached to head 1 before QEMU applied the mode set by `fb-activate.py`, then hit the VNC framebuffer resize. Harness changes: `rec.sh stop` now reports `EXITED EARLY` with the log tail when the recorder is already gone; `ci_spikes.py` waits (≤ 10 s) until `screendump` of each secondary head is no longer 640×480 before starting recorders, records that wait, and copies `screen<i>.log` into the artifacts.
 - **Run 19 (`39170272915`), UEFI:** `start-vm.sh` with `VM_FIRMWARE=uefi` (`OVMF_CODE.fd` read-only + writable copy of `OVMF_VARS.fd`, both from `edk2-ovmf-20241117-8.el9`): QGA ready 11.5 s after container start; `/sys/firmware/efi` present (`Boot0000`–`Boot0002` efivars, `fw_platform_size` 64); all 16 checks pass. Under OVMF both heads report 1280×800 at the first screenshot (the firmware initialises the secondary head); under SeaBIOS head 1 stays 640×480 until the guest modesets it.
 - **Run 24 (`39170999480`), hardened harness:** all seven jobs green. `record_screens` detail now includes the modeset wait: `video1 modeset visible after 0.2s` in both BIOS boots (no-seed and image-mount); under UEFI head 1 is already 1280×800 so no wait is needed. The 0.2 s window is the race the run-18 recording most likely fell into.
+
+## SSH as the guest-access transport (spikes A/B/C, 2026-10-19)
+
+Context: the guest agent is to become optional (black-box images are the primary use case); exec and file transfer
+move to SSH over a slirp `hostfwd` port forward. Library under test: Apache MINA SSHD **2.20.0** (latest 2.x; 3.0 is
+at milestone M6), no Bouncy Castle. Code: `vm-testcontainer/spike-ssh/`.
+
+### Spike B, local sandbox (Docker 29.8): MINA SSHD 2.20.0 vs a real OpenSSH server
+
+Server: `rockylinux:9` + `openssh-server-9.9p1-12.el9_8.rocky.0.1` (the same OpenSSH the Rocky 9.8 guest runs),
+users `root` and `vmtc` (password, NOPASSWD sudo), keys generated with `ssh-keygen` (rsa, ecdsa, ed25519). JDK 21.0.12.
+
+| Check | Plain classpath | Shaded jar (`org.apache.sshd` → `vmtc.shaded.org.apache.sshd`, `ServicesResourceTransformer`) |
+|-------|-----------------|------------------------------------------------------------------------------------------------|
+| password auth, `id -un`, exit codes, stderr | OK | OK |
+| wrong password | `org.apache.sshd.common.SshException: No more authentication methods available` | same (relocated class name) |
+| RSA key (OpenSSH private key format) | OK (rsa-sha2) | OK |
+| ECDSA key | OK | OK |
+| Ed25519 key, **no extra provider** | **FAIL** `NoSuchAlgorithmException: Unsupported key type (ssh-ed25519)`; `SecurityUtils.isEDDSACurveSupported()=false` on JDK 21 | same |
+| Ed25519 key with `net.i2p.crypto:eddsa:0.3.0` (unsigned, relocated to `vmtc.shaded.net.i2p.crypto`) | OK, `eddsaSupported=true` | **OK** |
+| `sudo -n id -u` as `vmtc` | rc=0, `0` | — |
+| SFTP via `SftpClient.write(path, bufferSize)` (async `OutputStream`) | **FAIL**: `EOFException: Closing: [SftpChannelSubsystem…] cmd=SSH_MSG_CHANNEL_DATA` on the first write; the server log shows the sftp subsystem starting and exiting 0 | same |
+| SFTP via the synchronous handle API (`open` / `write(handle, offset, buf)` / `read`) | **OK**, 20 MB: put 21 MB/s, get 55 MB/s (container-to-container, no VM) | not re-run |
+| negotiated | `ecdsa-sha2-nistp256`, `curve25519-sha256`, `chacha20-poly1305@openssh.com` | same |
+
+Conclusions for the plan: Bouncy Castle is not needed; Ed25519 needs the small `net.i2p.crypto:eddsa` provider,
+which relocates cleanly (Bouncy Castle would not, being a signed JCE provider); use the synchronous SFTP handle API
+for copies, not `SftpClient.write(String, int)`; relocation works end to end against OpenSSH 9.9.

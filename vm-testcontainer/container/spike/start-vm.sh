@@ -28,17 +28,21 @@ if [ "${VM_FIRMWARE:-bios}" = uefi ]; then
 else
   echo "FIRMWARE: bios"
 fi
+# Port forwards (spike A): VM_PORT_FORWARDS="22:10022,80:10080" -> slirp hostfwd entries on net0 (guest:container port)
+HOSTFWD=""
+for pf in ${VM_PORT_FORWARDS//,/ }; do HOSTFWD+=",hostfwd=tcp:0.0.0.0:${pf##*:}-:${pf%%:*}"; done
+[ -n "$HOSTFWD" ] && echo "PORT_FORWARDS: $HOSTFWD"
 echo "QEMU_STARTING $(date +%s.%N)"
 exec /usr/libexec/qemu-kvm -name spikevm -nodefaults -no-user-config -M q35 $ACCEL \
   -smp ${VM_CPUS:-2},maxcpus=${VM_MAXCPUS:-4} -m ${VM_MEM_MB:-2048},slots=4,maxmem=${VM_MAXMEM:-8G} \
   -display none "${DISPLAYS[@]}" "${FW[@]}" \
-  -qmp tcp:127.0.0.1:4444,server=on,wait=off \
+  -qmp tcp:${QMP_BIND:-127.0.0.1}:4444,server=on,wait=off \
   -chardev socket,id=qga0,host=127.0.0.1,port=4445,server=on,wait=off \
   -device virtio-serial-pci -device virtserialport,chardev=qga0,name=org.qemu.guest_agent.0 \
   -serial file:/vm/out/serial.log \
   -drive file=/vm/run/overlay.qcow2,format=qcow2,if=none,id=disk0 -device virtio-blk-pci,drive=disk0,bootindex=0 \
   "${SEED[@]}" \
-  -netdev user,id=net0 -device virtio-net-pci,netdev=net0 \
+  -netdev user,id=net0$HOSTFWD -device virtio-net-pci,netdev=net0 \
   -audiodev ${VM_AUDIODEV:-none},id=snd0 -device ich9-intel-hda -device hda-duplex,audiodev=snd0 \
   -device qemu-xhci,id=xhci \
   -device virtio-scsi-pci,id=scsi0 -device scsi-cd,id=cd0,bus=scsi0.0 \

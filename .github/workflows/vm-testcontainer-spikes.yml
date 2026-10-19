@@ -208,6 +208,91 @@ jobs:
             vm-testcontainer/spike-java/target/*-results.txt
           retention-days: 14
 
+  ssh-probe:
+    name: "ssh-probe (spikes A/B/C: hostfwd + MINA SSHD, agent-less guest, ${{ matrix.accel }})"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        accel: [kvm, tcg]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+
+      - name: Enable /dev/kvm (0666)
+        if: matrix.accel == 'kvm'
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
+
+      - name: Build spike image (slim)
+        run: podman build -q -f "$SPIKE_DIR/Containerfile.spike" --build-arg VARIANT=slim -t "$IMAGE" "$SPIKE_DIR"
+
+      - name: Restore Rocky guest image
+        id: cache-rocky
+        uses: actions/cache@v4
+        with:
+          path: ~/vm-images
+          key: rocky-${{ env.ROCKY_SHA256 }}
+
+      - name: Download Rocky guest image
+        if: steps.cache-rocky.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/vm-images
+          curl -fsSL --retry 5 -o ~/vm-images/$ROCKY_IMAGE "https://dl.rockylinux.org/pub/rocky/9/images/x86_64/$ROCKY_IMAGE"
+          echo "$ROCKY_SHA256  $HOME/vm-images/$ROCKY_IMAGE" | sha256sum -c -
+
+      - name: Generate test SSH keys (rsa, ecdsa, ed25519)
+        run: |
+          mkdir -p ~/sshkeys && for t in rsa ecdsa ed25519; do ssh-keygen -q -t $t -N '' -f ~/sshkeys/id_$t; done
+          ls -l ~/sshkeys
+
+      - name: Build reference guest (with SSH users/keys)
+        run: |
+          GUEST_VARIANT=reference SSH_PUBKEY_FILES="$HOME/sshkeys/id_rsa.pub $HOME/sshkeys/id_ecdsa.pub $HOME/sshkeys/id_ed25519.pub" \
+            "$SPIKE_DIR/build-guest.sh" podman "$IMAGE" "$HOME/vm-images/$ROCKY_IMAGE" "$HOME/guest-ref" localhost/vmtc-guest:ssh-ref ${{ matrix.accel }} \
+            2>&1 | tee guest-build-ref.log
+
+      - name: Build BLACK-BOX guest (no qemu-guest-agent, cloud-init disabled)
+        run: |
+          GUEST_VARIANT=blackbox SSH_PUBKEY_FILES="$HOME/sshkeys/id_rsa.pub $HOME/sshkeys/id_ecdsa.pub $HOME/sshkeys/id_ed25519.pub" \
+            "$SPIKE_DIR/build-guest.sh" podman "$IMAGE" "$HOME/vm-images/$ROCKY_IMAGE" "$HOME/guest-bb" localhost/vmtc-guest:ssh-bb ${{ matrix.accel }} \
+            2>&1 | tee guest-build-bb.log
+
+      - name: Probe reference guest over SSH
+        run: vm-testcontainer/spike-ssh/run-ssh-probe.sh reference ${{ matrix.accel }} "$HOME/guest-ref/run/rocky9-vmtc.qcow2" ~/sshkeys true
+
+      - name: Probe black-box guest over SSH
+        run: vm-testcontainer/spike-ssh/run-ssh-probe.sh blackbox ${{ matrix.accel }} "$HOME/guest-bb/run/rocky9-vmtc-blackbox.qcow2" ~/sshkeys false
+
+      - name: Publish results
+        if: always()
+        run: |
+          for f in vm-testcontainer/spike-ssh/target/results/ssh-probe-*.txt; do
+            { echo "### ssh-probe ${{ matrix.accel }} $(basename "$f")"; echo '```'; cat "$f"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          done
+          { echo '### guest builds'; echo '```'; grep -h -a -E "customize_seconds|convert_seconds|DNF_RC|DNF_REMOVE_RC|AGENT_REMOVED|qemu-guest-agent|CUSTOMIZE_DONE" guest-build-*.log; echo '```'; } >> "$GITHUB_STEP_SUMMARY" || true
+          grep -q MVN_FAILED vm-testcontainer/spike-ssh/target/results/*.txt && exit 1 || true
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ssh-probe-${{ matrix.accel }}
+          path: |
+            vm-testcontainer/spike-ssh/target/results/
+            vm-testcontainer/spike-ssh/target/surefire-reports/
+            guest-build-*.log
+            ~/guest-ref/run/customize-serial.log
+            ~/guest-bb/run/customize-serial.log
+          retention-days: 14
+
   compat-api-probe:
     name: compat-api-probe (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

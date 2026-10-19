@@ -443,7 +443,9 @@ Design consequences recorded for the sub-plan:
 | `rec.sh stop sc` | process gone after 137 ms; file validated and copied to the host after **249 ms** (REQ-REC-02 budget 2 s); 28 462 bytes; `gst-discoverer`: Duration 7.9 s, 1280×800 |
 | recorder log after stop | `rfbsrc` teardown errors (`Error on setup VNC connection…`, `streaming stopped, reason error (-5)`) — the known rule-c behaviour after SIGINT; the file is valid |
 
-Conclusion: PLAN.md §9.2 step 4a / §9.8 / §15 R11 move to [V] for the netavark backend. TCG entry pending.
+TCG entry of the same run: identical path, recorder start 577 ms, `RFB 003.008`, 8.0 s at 1280×800, process gone after 170 ms, validated + copied after **312 ms**.
+
+Conclusion: PLAN.md §9.2 step 4a / §9.8 / §15 R11 move to [V] for the netavark backend, KVM and TCG.
 
 ### Spikes D and E, local sandbox (2026-10-19): SSH exec timeouts/signals, Gradle Shadow relocation, JPMS
 

@@ -29,8 +29,8 @@ else
   echo "FIRMWARE: bios"
 fi
 # Port forwards (spike A): VM_PORT_FORWARDS="22:10022,80:10080" -> slirp hostfwd entries on net0 (guest:container port)
-HOSTFWD=""
-for pf in ${VM_PORT_FORWARDS//,/ }; do HOSTFWD+=",hostfwd=tcp:0.0.0.0:${pf##*:}-:${pf%%:*}"; done
+HOSTFWD="" PF=${VM_PORT_FORWARDS:-}
+for pf in ${PF//,/ }; do HOSTFWD+=",hostfwd=tcp:0.0.0.0:${pf##*:}-:${pf%%:*}"; done
 [ -n "$HOSTFWD" ] && echo "PORT_FORWARDS: $HOSTFWD"
 echo "QEMU_STARTING $(date +%s.%N)"
 exec /usr/libexec/qemu-kvm -name spikevm -nodefaults -no-user-config -M q35 $ACCEL \

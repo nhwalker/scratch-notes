@@ -63,6 +63,24 @@ public final class SshMatrix {
                     System.out.println("RESULT exec[" + cmd + "] rc=" + e.exitCode() + " out=" + e.stdout().trim().replace('\n', '|')
                             + " err=" + e.stderr().trim() + " ms=" + e.millis());
                 }
+                if (a.containsKey("signal-tests")) {
+                    for (String cmd : List.of("timeout -s KILL 2 sleep 61", "timeout 2 sleep 61", "timeout --preserve-status -s KILL 2 sleep 61",
+                            "timeout --foreground -s KILL 2 sleep 61", "timeout --foreground -k 1 2 sleep 61",
+                            "timeout --foreground -k 1 2 sh -c 'trap \"\" TERM; sleep 61'", "timeout -k 1 2 sh -c 'trap \"\" TERM; sleep 61'",
+                            "timeout --foreground -s KILL 2 sh -c 'sleep 62 & sleep 61'",
+                            "sh -c 'kill -9 $$'", "sh -c 'kill -TERM $$'", "sh -c 'exit 137'")) {
+                        SshProbe.Exec e = p.exec(cmd, t);
+                        System.out.println("RESULT signal[" + cmd + "] rc=" + e.exitCode() + " signal=" + e.exitSignal() + " ms=" + e.millis() + " err=" + e.stderr().trim());
+                    }
+                    System.out.println("RESULT leftover-after-timeout " + p.exec("sleep 3; pgrep -fa 'sleep 6[12]' || echo none", t).stdout().trim().replace('\n', '|'));
+                    System.out.println("RESULT channel-close " + p.execThenClose("sleep 300", Duration.ofSeconds(1)));
+                    Thread.sleep(1000);
+                    System.out.println("RESULT leftover-after-close " + p.exec("pgrep -fa 'sleep 300' || echo none", t).stdout().trim().replace('\n', '|'));
+                    System.out.println("RESULT channel-close-pty-less-nohup " + p.execThenClose("sh -c 'sleep 301 & wait'", Duration.ofSeconds(1)));
+                    Thread.sleep(1000);
+                    System.out.println("RESULT leftover-after-close2 " + p.exec("pgrep -fa 'sleep 30[01]' || echo none", t).stdout().trim().replace('\n', '|'));
+                    p.exec("pkill -f 'sleep 30[01]' || true", t);
+                }
                 if (a.containsKey("sudo")) {
                     SshProbe.Exec e = p.exec("sudo -n id -u", t);
                     System.out.println("RESULT sudo rc=" + e.exitCode() + " out=" + e.stdout().trim() + " err=" + e.stderr().trim());
@@ -99,7 +117,7 @@ public final class SshMatrix {
         for (int i = 0; i < argv.length; i++) {
             if (!argv[i].startsWith("--")) throw new IllegalArgumentException(argv[i]);
             String k = argv[i].substring(2);
-            boolean flag = k.equals("sudo");
+            boolean flag = k.equals("sudo") || k.equals("signal-tests");
             String v = flag ? "true" : argv[++i];
             m.computeIfAbsent(k, x -> new ArrayList<>()).add(v);
         }

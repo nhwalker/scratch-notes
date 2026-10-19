@@ -232,8 +232,8 @@ jobs:
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
 
-      - name: Build spike image (slim)
-        run: podman build -q -f "$SPIKE_DIR/Containerfile.spike" --build-arg VARIANT=slim -t "$IMAGE" "$SPIKE_DIR"
+      - name: Build spike image (media; also serves as the recorder sidecar image)
+        run: podman build -q -f "$SPIKE_DIR/Containerfile.spike" --build-arg VARIANT=media -t "$IMAGE" "$SPIKE_DIR"
 
       - name: Restore Rocky guest image
         id: cache-rocky
@@ -273,6 +273,9 @@ jobs:
 
       - name: Probe black-box guest over SSH
         run: vm-testcontainer/spike-ssh/run-ssh-probe.sh blackbox ${{ matrix.accel }} "$HOME/guest-bb/run/rocky9-vmtc-blackbox.qcow2" ~/sshkeys false
+
+      - name: "Recorder SIDECAR probe (R11: Testcontainers Network + rfbsrc over the container network)"
+        run: vm-testcontainer/spike-ssh/run-ssh-probe.sh sidecar ${{ matrix.accel }} "$HOME/guest-ref/run/rocky9-vmtc.qcow2" ~/sshkeys true SidecarRecorderProbeTest
 
       - name: Publish results
         if: always()

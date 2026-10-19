@@ -25,7 +25,7 @@ import java.util.List;
 
 /** Thin wrapper over MINA SSHD used by both the local matrix (spike B) and the guest probe (spikes A/C). */
 public final class SshProbe implements AutoCloseable {
-    public record Exec(int exitCode, String stdout, String stderr, long millis) {}
+    public record Exec(int exitCode, String exitSignal, String stdout, String stderr, long millis) {}
 
     private final SshClient client;
     private final ClientSession session;
@@ -86,7 +86,19 @@ public final class SshProbe implements AutoCloseable {
             ch.open().verify(timeout);
             ch.waitFor(EnumSet.of(ClientChannelEvent.CLOSED), timeout);
             Integer rc = ch.getExitStatus();
-            return new Exec(rc == null ? -1 : rc, out.toString(), err.toString(), (System.nanoTime() - t0) / 1_000_000);
+            return new Exec(rc == null ? -1 : rc, ch.getExitSignal(), out.toString(), err.toString(), (System.nanoTime() - t0) / 1_000_000);
+        }
+    }
+
+    /** Open an exec channel, close it after {@code after}, and report what happened (spike D: does channel close kill the child?). */
+    public String execThenClose(String command, Duration after) throws IOException, InterruptedException {
+        try (ClientChannel ch = session.createExecChannel(command)) {
+            ch.setOut(new ByteArrayOutputStream()); ch.setErr(new ByteArrayOutputStream());
+            ch.open().verify(Duration.ofSeconds(10));
+            Thread.sleep(after.toMillis());
+            long t0 = System.nanoTime();
+            ch.close(false).await(Duration.ofSeconds(5));
+            return "closed in " + (System.nanoTime() - t0) / 1_000_000 + " ms, exit=" + ch.getExitStatus() + " signal=" + ch.getExitSignal();
         }
     }
 

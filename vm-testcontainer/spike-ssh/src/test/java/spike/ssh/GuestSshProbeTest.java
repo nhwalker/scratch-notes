@@ -61,9 +61,9 @@ class GuestSshProbeTest {
         log("security " + SshProbe.securityFacts());
 
         try (GenericContainer<?> vm = new GenericContainer<>(DockerImageName.parse(image))) {
-            vm.withEnv("VM_ACCEL", accel).withEnv("VM_SCREENS", "2").withEnv("VM_PORT_FORWARDS", "22:10022")
+            vm.withEnv("VM_ACCEL", accel).withEnv("VM_SCREENS", "2").withEnv("VM_PORT_FORWARDS", "22:10022,8080:10023,9999:10024")
               .withEnv("QMP_BIND", "0.0.0.0").withEnv("VNC_BIND", "0.0.0.0")
-              .withExposedPorts(10022, 4444)
+              .withExposedPorts(10022, 10023, 10024, 4444)
               .withFileSystemBind(disk.toString(), "/vm/base/disk.img", BindMode.READ_ONLY)
               .withFileSystemBind(spikeDir.toString(), "/spike", BindMode.READ_ONLY)
               .withCommand("bash", "-c", "exec /spike/start-vm.sh")
@@ -167,6 +167,23 @@ class GuestSshProbeTest {
                 assertEquals(0, fb.exitCode(), "fb-activate via sudo");
             }
 
+            // --- guestPort probe form (HTTP) + closed guest port behaviour through slirp (spike for Readiness.guestPort) ---
+            try (SshProbe r = SshProbe.connect(host, sshPort, "root", PW, null, Duration.ofSeconds(20))) {
+                int closedPort = vm.getMappedPort(10024);
+                log("closed-guest-port " + probePort(host, closedPort, new byte[0], 3000));
+                log("closed-guest-port-with-probe " + probePort(host, closedPort, "HEAD / HTTP/1.0\r\n\r\n".getBytes(StandardCharsets.US_ASCII), 3000));
+                r.exec("sh -c 'cd /tmp && nohup python3 -m http.server 8080 >/tmp/http.log 2>&1 &'", t);
+                int httpPort = vm.getMappedPort(10023);
+                long t1 = System.nanoTime(); String res = null;
+                for (int i = 0; i < 30; i++) {
+                    res = probePort(host, httpPort, "HEAD / HTTP/1.0\r\n\r\n".getBytes(StandardCharsets.US_ASCII), 3000);
+                    if (res.contains("HTTP/1.0 200") || res.contains("HTTP/1.1 200")) break;
+                    Thread.sleep(500);
+                }
+                log("http-guest-port probe after " + ms(t1) + " ms: " + res);
+                log("http-guest-port-no-probe " + probePort(host, httpPort, new byte[0], 3000));
+            }
+
             // --- wrong password ---
             try (SshProbe bad = SshProbe.connect(host, sshPort, "root", "nope", null, Duration.ofSeconds(20))) {
                 log("wrong-password UNEXPECTED-OK");
@@ -225,6 +242,24 @@ class GuestSshProbeTest {
     }
 
     static long ms(long t0) { return (System.nanoTime() - t0) / 1_000_000; }
+
+    /** Connect, optionally write a probe, read up to 64 bytes with a timeout; describe what happened and how long it took. */
+    static String probePort(String host, int port, byte[] probe, int readTimeoutMs) {
+        long t0 = System.nanoTime();
+        try (Socket s = new Socket()) {
+            s.connect(new InetSocketAddress(host, port), 2000);
+            long tc = ms(t0);
+            s.setSoTimeout(readTimeoutMs);
+            if (probe.length > 0) { s.getOutputStream().write(probe); s.getOutputStream().flush(); }
+            byte[] b = new byte[64];
+            int n = s.getInputStream().read(b);
+            return "connect=" + tc + "ms read=" + (n < 0 ? "EOF" : n + "B '" + new String(b, 0, n, StandardCharsets.ISO_8859_1).replace("\r", "\\r").replace("\n", "\\n") + "'") + " after " + ms(t0) + "ms";
+        } catch (java.net.SocketTimeoutException e) {
+            return "read TIMEOUT after " + ms(t0) + "ms (connect succeeded)";
+        } catch (IOException e) {
+            return e.getClass().getSimpleName() + ": " + e.getMessage() + " after " + ms(t0) + "ms";
+        }
+    }
 
     static String sha256(Path p) throws Exception {
         MessageDigest md = MessageDigest.getInstance("SHA-256");

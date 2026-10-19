@@ -60,11 +60,12 @@ class SidecarRecorderProbeTest {
             vm.start();
             log("vm started in " + ms(t0) + " ms");
 
-            // recorder sidecar: same image, tini as PID 1, sleep infinity, spike scripts mounted
+            // recorder sidecar: same image, an init as PID 1 (the spike image has no tini; podman's --init
+            // (catatonit) stands in for it -- the probe is about the network path, not the init), sleep infinity
             rec.withNetwork(net)
                .withFileSystemBind(spikeDir.toString(), "/spike", BindMode.READ_ONLY)
-               .withCreateContainerCmdModifier(c -> c.withEntrypoint("/usr/bin/tini", "--"))
-               .withCommand("sleep", "infinity")
+               .withCreateContainerCmdModifier(c -> { c.withEntrypoint("/bin/sleep"); c.getHostConfig().withInit(true); })
+               .withCommand("infinity")
                .withStartupCheckStrategy(new org.testcontainers.containers.startupcheck.IsRunningStartupCheckStrategy());
             long t1 = System.nanoTime();
             rec.start();

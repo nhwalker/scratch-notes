@@ -1,0 +1,11 @@
+qga_ready_s=92.1
+runcmd_done_s=654
+exit=0
+--stdout--
+system_u:system_r:virt_qemu_ga_t:s0
+card 0: Intel [HDA Intel], device 0: Generic Analog [Generic Analog]
+5.14.0-687.10.1.el9_8.0.1.x86_64
+--stderr--
+frames=265561 rate=44100 ch=2 bits=16 dur=6.02s
+rms=11776 nonzero=131560/265561
+loudest window @ 0.50s: ~1000 Hz

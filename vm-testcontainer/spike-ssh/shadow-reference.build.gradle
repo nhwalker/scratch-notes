@@ -1,0 +1,44 @@
+plugins {
+    id 'java-library'
+    id 'maven-publish'
+    id 'com.gradleup.shadow' version '9.6.1'
+}
+group = 'io.example.vmtc'
+version = '0.0.1'
+repositories { mavenCentral() }
+configurations {
+    shaded
+    compileClasspath.extendsFrom(shaded)
+    runtimeClasspath.extendsFrom(shaded)
+    testRuntimeClasspath.extendsFrom(shaded)
+}
+dependencies {
+    api 'org.testcontainers:testcontainers:2.0.5'
+    implementation 'com.fasterxml.jackson.core:jackson-databind:2.22.4'
+    shaded 'org.apache.sshd:sshd-core:2.20.0'
+    shaded 'org.apache.sshd:sshd-sftp:2.20.0'
+    shaded 'net.i2p.crypto:eddsa:0.3.0'
+}
+java { toolchain { languageVersion = JavaLanguageVersion.of(21) } }
+tasks.named('shadowJar') {
+    configurations = [project.configurations.shaded]
+    relocate 'org.apache.sshd', 'io.example.vmtc.shaded.org.apache.sshd'
+    relocate 'net.i2p.crypto', 'io.example.vmtc.shaded.net.i2p.crypto'
+    mergeServiceFiles()
+    exclude 'META-INF/*.SF', 'META-INF/*.DSA', 'META-INF/*.RSA'
+    archiveClassifier = ''
+    manifest { attributes 'Main-Class': 'shade.Main' }
+}
+// Publish the SHADED jar through the standard java component so the POM keeps api/implementation (but not 'shaded') deps
+tasks.named('jar') { enabled = false }
+tasks.named('shadowJar') { manifest { attributes 'Automatic-Module-Name': 'io.example.vmtc' } }
+configurations.apiElements.outgoing.artifacts.clear()
+configurations.runtimeElements.outgoing.artifacts.clear()
+configurations.apiElements.outgoing.artifact(tasks.named('shadowJar'))
+configurations.runtimeElements.outgoing.artifact(tasks.named('shadowJar'))
+publishing {
+    publications {
+        mavenJava(MavenPublication) { from components.java }
+    }
+    repositories { maven { url = layout.buildDirectory.dir('repo') } }
+}

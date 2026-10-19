@@ -1,0 +1,24 @@
+# Rocky Linux 9.8 - FALLBACK only (priority 90; UBI repos default to 99 unless set lower, see Containerfile)
+[rocky98-baseos]
+name=Rocky Linux 9.8 BaseOS (fallback)
+baseurl=https://dl.rockylinux.org/pub/rocky/9.8/BaseOS/x86_64/os/
+gpgcheck=1
+gpgkey=https://dl.rockylinux.org/pub/rocky/RPM-GPG-KEY-Rocky-9
+priority=90
+excludepkgs=rocky-release* rocky-logos* rocky-gpg-keys* rocky-repos*
+
+[rocky98-appstream]
+name=Rocky Linux 9.8 AppStream (fallback)
+baseurl=https://dl.rockylinux.org/pub/rocky/9.8/AppStream/x86_64/os/
+gpgcheck=1
+gpgkey=https://dl.rockylinux.org/pub/rocky/RPM-GPG-KEY-Rocky-9
+priority=90
+excludepkgs=rocky-release* rocky-logos* rocky-gpg-keys* rocky-repos*
+
+[rocky98-crb]
+name=Rocky Linux 9.8 CRB (fallback)
+baseurl=https://dl.rockylinux.org/pub/rocky/9.8/CRB/x86_64/os/
+gpgcheck=1
+gpgkey=https://dl.rockylinux.org/pub/rocky/RPM-GPG-KEY-Rocky-9
+priority=90
+excludepkgs=rocky-release* rocky-logos* rocky-gpg-keys* rocky-repos*

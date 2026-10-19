@@ -1,0 +1,7 @@
+seed/
+out/*.png
+out/*.wav
+out/*.webm
+out/serial*.log
+__pycache__/
+out/t0

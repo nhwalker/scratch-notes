@@ -65,7 +65,7 @@
 **Verify:** `git show --stat HEAD` lists `docs/vm-testcontainer/PLAN.md`, and the commit message has one `<name> <version> <source URL> <date>` line per version row.
 
 ### Step 0.4 — Record open decisions
-- [ ] Open the Deviation log (§D) and confirm its seeded items: §15 R3 (SELinux hosts), the UEFI verification note, the SSH spike results, the closed spike D/E items (§15 R12, R13) and the open [U] item §15 R11 (recorder sidecar).
+- [ ] Open the Deviation log (§D) and confirm its seeded items: §15 R3 (SELinux hosts), the UEFI verification note, the SSH spike results, the closed spike items (§15 R11 sidecar, R12 Shadow, R13 timeout) and the open decisions of PLAN.md §16 items 9–13.
 
 **Verify:** §D lists the seeded items with owner "unassigned" or a name.
 
@@ -702,7 +702,7 @@ Record every place where reality differed from PLAN.md, every [U] outcome, and e
 | 1 | | 0.4 | §15 R3: SELinux-enforcing host acceptance (REQ-DISK-10) | — | open |
 | 2 | 2026-10-18 | 0.4 | UEFI boot of the reference guest verified in the spike (CI run 19): efivars present, all checks pass | PLAN.md §8.4, §3.2, §13 T22 | closed |
 | 3 | 2026-10-19 | 0.4 | SSH guest-access spikes A/B/C (CI run 31 + local): hostfwd through Testcontainers, MINA SSHD 2.20.0 without Bouncy Castle (+ eddsa for Ed25519), relocation with maven-shade, SFTP synchronous API, agent-less black-box guest, sudo, `forceModeset` over SSH. All verified; design folded into PLAN.md (D15–D19) | PLAN.md §3.9, §8.5, §9.4, §10.1, §10.3 | closed |
-| 4 | 2026-10-19 | 4.0 | §15 R11: recorder sidecar over a user-defined rootless Podman network is unverified (the pipeline itself is). A CI probe (`SidecarRecorderProbeTest`) exists on the plan branch; its first run failed for an unrelated reason (no `tini` in the spike image) and is being re-run. Verify in step 4.0; fallback documented in PLAN.md §15 R11 | — | open |
+| 4 | 2026-10-19 | 4.0 | §15 R11 **verified for KVM** in spike run 36 (`SidecarRecorderProbeTest`: alias resolution, RFB banner, 7.9 s recording over the network, stop + copy 249 ms; Podman 4.9.3, netavark). Step 4.0 repeats the hand check in the target repository and records the network backend; fallback for CNI hosts in PLAN.md §15 R11 | PLAN.md §3.9, §9.2 step 4a, §9.8, §15 R11 | closed (KVM); TCG run pending |
 | 5 | 2026-10-19 | 1.2 / 1.14b | §15 R12 **closed** by spike E: Gradle 9.8.1 + Shadow 9.6.1 relocation, `components.java` publishing with the artifact swap, `Automatic-Module-Name`, slf4j-api exclusion (PLAN.md §3.10, §11.1). U20 re-proves it in this repository | PLAN.md §3.10, §11.1, §13.2 U20 | closed |
 | 6 | 2026-10-19 | 1.23 | §15 R13 **closed** by spike D: `timeout -s KILL` kills `timeout` itself (exit-signal, no status), `--foreground` leaves grandchildren alive; rule q is now `timeout -k 1 <n>` with exit 124 / late exit-signal mapping. T32 over SSH confirms | PLAN.md §1 rule q, §3.10, §9.4.2 | closed |
 | 7 | 2026-10-19 | 2.5 | `Readiness.guestPort(port, probe)` **verified** in both forms in spike run 34 (HTTP probe answered in 4–5 ms; no-probe form times out on HTTP; a port without a listener gives an immediate EOF, which the loop must treat as "retry") | PLAN.md §3.9, §8.5, §9.2 step 10 | closed |

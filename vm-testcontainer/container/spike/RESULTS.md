@@ -430,6 +430,21 @@ Design consequences recorded for the sub-plan:
 - **Sidecar probe (`SidecarRecorderProbeTest`) did not reach its first assertion:** the recorder container was started with entrypoint `/usr/bin/tini`, which the spike image never had (the VM containers use podman's `--init`/catatonit). Fixed in `f7457e8` (recorder uses `--init` + `sleep infinity`); outcome in run 36 below.
 - The TCG matrix entry of this job was still running when these notes were written; the KVM entry is the source of the table above.
 
+### Run 36 (`39256311022`, head `f7457e8`): recorder SIDECAR over a Testcontainers network (R11) — KVM **pass**
+
+`SidecarRecorderProbeTest` (reference guest, KVM, Podman 4.9.3): VM container on `Network.newNetwork()` with alias `vm-<uuid8>` and `VNC_BIND=0.0.0.0`; recorder = the same spike image started with podman `--init` and `sleep infinity` (the spike image has no `tini`; the plan's recorder image gets tini from EPEL).
+
+| Check | Result |
+|-------|--------|
+| recorder container start | 780 ms, PID 1 = `podman-init` |
+| `getent hosts vm-<id>` in the recorder | `10.89.0.2 vm-<id>.dns.podman` (aardvark-dns) |
+| `/dev/tcp/vm-<id>/5900` from the recorder | `RFB 003.008` |
+| `rec.sh start sc 5900 10` with `VNC_HOST=vm-<id>` | `started sc pid 10`; 8 s window |
+| `rec.sh stop sc` | process gone after 137 ms; file validated and copied to the host after **249 ms** (REQ-REC-02 budget 2 s); 28 462 bytes; `gst-discoverer`: Duration 7.9 s, 1280×800 |
+| recorder log after stop | `rfbsrc` teardown errors (`Error on setup VNC connection…`, `streaming stopped, reason error (-5)`) — the known rule-c behaviour after SIGINT; the file is valid |
+
+Conclusion: PLAN.md §9.2 step 4a / §9.8 / §15 R11 move to [V] for the netavark backend. TCG entry pending.
+
 ### Spikes D and E, local sandbox (2026-10-19): SSH exec timeouts/signals, Gradle Shadow relocation, JPMS
 
 **D — `timeout`, exit signals and channel close over SSH** (MINA SSHD 2.20.0 → OpenSSH 9.9 in `rockylinux:9`, `SshMatrix --signal-tests`):

@@ -353,6 +353,7 @@ Legend:
 | Black-box guest build: customize boot 45 s (KVM) / 465 s (TCG), flatten 47 s, 816–818 MB qcow2 and containerDisk | [V] (run 31) |
 | **`guestPort` probe form:** a second forward (guest 8080) to `python3 -m http.server 8080`; writing `HEAD / HTTP/1.0\r\n\r\n` after the connect read `HTTP/1.0 200 OK` within 4–5 ms; the same forward **without** a probe hit the 3 s read timeout (HTTP never speaks first). A forward to a guest port with **no listener**: connect in 0 ms, then **EOF in 0 ms** (slirp closes it; neither a refused connect nor silence). Both guests, KVM | [V] (run 34, `GuestSshProbeTest`) |
 | The guest's `python3 -m http.server 8080` was reachable through the forward on both shipped guests: no guest firewall stands in the way (GenericCloud ships no active firewalld) | [V] (run 34) |
+| **Recorder sidecar over a Testcontainers `Network` (R11):** `Network.newNetwork()` + `withNetworkAliases("vm-<uuid8>")` through the compat API on rootless Podman 4.9.3 (netavark + aardvark-dns): a second container resolved the alias, read the `RFB 003.008` banner from `vm-<id>:5900`, and `gst-launch rfbsrc host=vm-<id>` recorded 7.9 s at 1280×800; `vmtc-rec stop` → gst process gone after 137 ms, file validated and copied to the host after 249 ms (REQ-REC-02 budget 2 s). The recorder's log ends with `rfbsrc` teardown errors after the normal stop (rule c) | [V] (run 36, KVM; `SidecarRecorderProbeTest`) |
 
 ### 3.10 Exec timeout, JPMS and Gradle Shadow (spikes D and E, local, 2026-10-19)
 
@@ -523,7 +524,7 @@ Run each check inside the image it names (`<engine> run --rm --entrypoint /bin/b
 10. Resolution order [REQ-IMG-02]: `dnf -q repoquery --installed --qf '%{from_repo}' <pkg>` prints, in the runner, `rocky-fallback-appstream` for `qemu-kvm-core`, `epel9` for `tini`, and a repo id starting with `ubi-9-` for `jq`; in the recorder, `rocky-fallback-appstream` for `gstreamer1-plugins-good`, `epel9` for `tini`, and an `ubi-9-` id for `gstreamer1`. Only packages installed by the Containerfile's own `dnf install` are meaningful here: for packages that came with the base image layer (e.g. `bash`) dnf 4.14 prints an opaque transaction id instead of a repo **[V]** (checked on `rockylinux:9`, dnf 4.14.0).
 11. *recorder:* `/usr/local/bin/vmtc-rec status nothing` prints `stopped` and exits 0 (the script runs in this image) [REQ-IMG-06]
 
-### 6.5 Recorder Containerfile (normative; `images/recorder/Containerfile`) **[U]** (the packages and `rfbsrc` pipeline were verified inside the former media runner **[V]**; running them in a separate container on a Podman network is what §13 T8/T43 verify)
+### 6.5 Recorder Containerfile (normative; `images/recorder/Containerfile`) **[U]** as a file (the packages and `rfbsrc` pipeline were verified inside the former media runner **[V]**, and running them in a separate container on a Podman network was verified in spike run 36 **[V]**, §3.9; §13 T8/T43 re-prove it in the target repository)
 
 ```dockerfile
 ARG UBI_IMAGE
@@ -878,7 +879,7 @@ public class QemuVmContainer extends GenericContainer<QemuVmContainer> {
 2. **Bind** the cache file read-only at `/vm/base/disk.img` with `addFileSystemBind(hostPath, "/vm/base/disk.img", BindMode.READ_ONLY, selinux)` (the four-argument form is `addFileSystemBind`, not `withFileSystemBind`, in 2.0.5 **[V]** javap), where `selinux` is `SelinuxContext.SHARED` when `/sys/fs/selinux/enforce` exists and contains `1`, else `SelinuxContext.NONE`. Only cache files are ever bound (§9.3.2).
 3. **KVM:** `KvmDecision.decide(mode, detector)` (§9.6); apply `HostConfig.withDevices(...)` and, if needed, `withAnnotations(...)` in `withCreateContainerCmdModifier`.
 4. **Ports:** `withExposedPorts(4444, 4445, 5900, …, 5900+n-1, 10000, …, 10000+f-1)` where `f` is the number of forwards (§8.5; the implicit SSH forward counts). In the create-cmd modifier: `hostConfig.withPublishAllPorts(false)` (rule l) and replace `PortBindings` with `PortBinding(Ports.Binding.bindIp(addr), ExposedPort.tcp(p))` for each port, which keeps a random host port. `addr` is `127.0.0.1` for 4444, 4445 and every forward, and the configured VNC address for VNC ports.
-4a. **Network:** `withNetwork(VmtcNetwork.get())` (one `Network.newNetwork()` per JVM, created lazily, labelled `${LABEL_PREFIX}.managed/session/created` like the containers, closed by a JVM shutdown hook) and `withNetworkAliases("vm-" + <uuid8>)`, so a recorder container can reach the VNC servers by name (§9.8). `VNC_BIND` stays `0.0.0.0` inside the container for the same reason **[U]** (user-defined network on rootless Podman through the compat API; T43).
+4a. **Network:** `withNetwork(VmtcNetwork.get())` (one `Network.newNetwork()` per JVM, created lazily, labelled `${LABEL_PREFIX}.managed/session/created` like the containers, closed by a JVM shutdown hook) and `withNetworkAliases("vm-" + <uuid8>)`, so a recorder container can reach the VNC servers by name (§9.8). `VNC_BIND` stays `0.0.0.0` inside the container for the same reason **[V]** (run 36: `Network.newNetwork()` + alias through the compat API on rootless Podman 4.9.3 with netavark/aardvark-dns; T43 re-proves it).
 5. **Labels:** `${LABEL_PREFIX}.managed=true`, `${LABEL_PREFIX}.version=<VmtcConstants.VERSION>`, `${LABEL_PREFIX}.session=<internal.Session.id(), a UUID created once per JVM>`, `${LABEL_PREFIX}.created=<epoch seconds>`.
 6. **Env:** set §7.1 env, including `VM_PORT_FORWARDS` built from the forward list (`<guestPort>:<10000+k>` joined by `,`). For a seed, add `withCopyToContainer(Transferable.of(seed.userData()), "/vm/seed/user-data")` and the same for `meta-data`.
 7. **Wait strategy:** `VmWaitStrategy` (custom `AbstractWaitStrategy`). Every 200 ms it reads the container logs:
@@ -1164,7 +1165,7 @@ public interface KeyboardInput { void type(String text); void press(String... qc
 - **`press(qcodes…)`:** a single `send-key` with all qcodes held together, for example `press("ctrl","alt","f2")`.
 - **Making a screen change (tests):** output must go to the VGA console, e.g. `execShell("for i in $(seq 12); do echo tick$i > /dev/tty1; sleep 1; done >/dev/null 2>&1 &")`; writes to `/dev/ttyS0` do not change the screen.
 
-### 9.8 Screen recording (R8, D17: recorder sidecar) **[U]** as a sidecar; the pipeline itself is **[V]**
+### 9.8 Screen recording (R8, D17: recorder sidecar) **[V]** (pipeline: runs 1–24; sidecar over a Testcontainers `Network`: run 36)
 
 - **Recorder container:** on the first `startRecording` of a VM, the library starts one `GenericContainer` from the recorder image (`withRecorderImage`, else override `recorderImage`, else `VmtcConstants.defaultRecorderImage()`): `withNetwork(VmtcNetwork.get())`, labels as §9.2 step 5 plus `${LABEL_PREFIX}.role=recorder` and `${LABEL_PREFIX}.vm=<vm container id>`, no ports, default command (`sleep infinity`), `Wait.forLogMessage` not needed (`startupCheckStrategy` = running). The image label `${LABEL_PREFIX}.role` must be `recorder` (missing → WARN; other → `IllegalArgumentException`). A pull or start failure → `RecordingException("recorder container failed to start", cause)`. One recorder per VM, reused by every recording of that VM, stopped in `stop()` step 6.
 - **Naming:** `name` = `screen<i>-<uuid8>`.
@@ -1180,7 +1181,7 @@ public interface KeyboardInput { void type(String text); void press(String... qc
   - Accessors: `Path file()`, `Duration duration()`, `int width()`, `int height()`, valid after `close()`.
 - **Concurrency:** any number of recordings, including two on one screen (separate VNC clients under force-shared [V]).
 - The VM container keeps a registry of open recordings for `stop()` (§9.2) and the JUnit extension (§9.13).
-- **Why a sidecar:** the runner stays small and swappable; GStreamer updates do not rebuild the QEMU image; a future backend can keep the same recorder (D17). Cost: one more container per recording VM and a user-defined network. Both the network path (`rfbsrc` → `vm-<id>:5900+i` on a rootless Podman network) and the 2 s stop budget including the copy (REQ-REC-02) are **[U]** until T8/T43 run (§15 R11).
+- **Why a sidecar:** the runner stays small and swappable; GStreamer updates do not rebuild the QEMU image; a future backend can keep the same recorder (D17). Cost: one more container per recording VM and a user-defined network. Both the network path (`rfbsrc` → `vm-<id>:5900+i` on a rootless Podman network) and the 2 s stop budget including the copy (REQ-REC-02) were verified in spike run 36 under KVM (alias resolved by aardvark-dns, `RFB 003.008` read from the recorder container, 7.9 s recording, stop + validate + copy in 249 ms; §3.9, §15 R11). Expect `rfbsrc` teardown errors (`Error on setup VNC connection`, `streaming stopped, reason error (-5)`) in the recorder's log after a normal stop: that is rule c, not a failure; `vmtc-rec` judges the file.
 
 ### 9.9 Audio recording (R7, separate WAV)
 
@@ -1613,7 +1614,7 @@ public final class VmtcConstants {
 
 | Item | Duration |
 |------|----------|
-| Runner image build | about 51 s [V]; recorder image similar [U] |
+| Runner image build | about 51 s [V]; recorder image similar [U] (the spike's combined media image built in 40–60 s [V]) |
 | Guest disk builds | about 1.5 min each on KVM (40–45 s boot + 47 s flatten + packaging); about 8–9 min each on TCG [V] (runs 5, 31) |
 | KVM integration suite | about 5 min [U, estimate] |
 | TCG integration suite | about 20 min [U, estimate] |
@@ -1752,7 +1753,7 @@ The step-by-step checklist for each milestone is [PLAN-STEPS.md](PLAN-STEPS.md).
 | L8 | VNC is unauthenticated (D8) | anyone who can reach the published port can view and type into the VM | loopback bind by default; `withVncBindAddress` is an explicit opt-in |
 | L9 | SSH host keys are accepted by default (D16) and the shipped guests carry well-known test passwords | a man-in-the-middle on the loopback forward is not detected; the guests must never be used outside tests | loopback publishing; `HostKeyPolicy.pin(...)` available; README labels the guests as fixtures |
 | L10 | `exec` over SSH runs through the user's login shell and `timeout(1)`; no PTY | shell-init noise on stderr for exotic images; `timeout`/`env` must exist in the guest (Tier 1a, G8) | documented; `GuestExecResult.stderr` keeps the noise visible |
-| R11 | **Recorder sidecar unverified as a sidecar:** the `rfbsrc` pipeline is verified inside the VM container; running it in a second container over a user-defined rootless Podman network (name resolution `vm-<id>`, VNC reachability, `close()` within 2 s including the copy) is not | recording tests T8–T10, T24, T31, T43 could fail in M4 for network reasons | step 4.0 smoke-tests the sidecar by hand first; fallback if the network path is unusable: publish the VNC ports on `127.0.0.1` and run the recorder with host networking (`--network host`), documented as a deviation |
+| R11 | *(closed for KVM 2026-10-19, spike run 36; TCG entry of the same run pending)* Recorder sidecar over a Testcontainers `Network` on rootless Podman 4.9.3: alias resolution, VNC reachability, 7.9 s recording, stop + validate + copy 249 ms (§3.9). Residual risk: a host whose Podman uses the CNI backend without the `dnsname` plugin resolves no aliases | recording tests T8–T10, T24, T31, T43 fail in M4 for network reasons on such a host | step 4.0 smoke-tests the sidecar by hand and records `podman info --format '{{.Host.NetworkBackend}}'`; fallback if the network path is unusable: publish the VNC ports on `127.0.0.1` and run the recorder with host networking (`--network host`), documented as a deviation |
 | R12 | *(closed 2026-10-19, spike E)* Gradle Shadow 9.6.1 relocation of MINA SSHD + eddsa, publishing through `components.java` with the artifact swap, `Automatic-Module-Name`: all verified locally on Gradle 9.8.1; the slf4j-api leak was found and is excluded (§11.1) | — | the §11.1 build snippet is normative; U20 re-proves it in M1 |
 | R13 | *(closed 2026-10-19, spike D)* `timeout -s KILL` would have killed `timeout` itself (exit-signal, no status) and `--foreground` leaves grandchildren alive; rule q now prescribes `timeout -k 1 <n>` with exit 124 / late exit-signal mapping (§9.4.2, §3.10) | — | T32 over SSH confirms in M1 |
 
@@ -1808,7 +1809,8 @@ All on branch `claude/vm-testcontainer-plan-lqhfa6` of this repository (PR #9).
 | 19 (`39170272915`) | UEFI boot of the customised guest (OVMF_CODE.fd + VARS copy): efivars present, all checks pass; under OVMF both heads start at 1280×800 |
 | 24 (`39170999480`) | Hardened recorder harness green on all 7 jobs; the modeset of head 1 becomes visible to `screendump` 0.2 s after `fb-activate.py` returns (both BIOS boots); UEFI boot green again |
 | 16 (`39167116353`) | Explicit `pullImageCmd().withAuthConfig()` pull with no stored credentials (S4) and the wrong-password exception (S5, `UnauthorizedException`); the probe JVM run through `sudo -iu` has the `kvm` group and sees `/dev/kvm` readable/writable in the 0660 scenarios while the CI-shell JVM does not (Podman 4.9.3 and 5.7.0) |
-| 34 (`39254459700`) | `guestPort` probe forms on both guests (HTTP probe 4–5 ms, no-probe timeout, no-listener EOF, §3.9); `python3 -m http.server` reached through a second forward (T42); three key types baked by the build and accepted for `vmtc` and `root`. The first sidecar probe (`SidecarRecorderProbeTest`) failed before testing anything (the spike image has no `tini`; fixed in f7457e8, re-run pending) |
+| 36 (`39256311022`) | **Recorder sidecar (R11), KVM:** VM on `Network.newNetwork()` with alias `vm-<uuid8>`, recorder container (same spike image, podman `--init`) resolved the alias (`10.89.0.2 vm-….dns.podman`), read `RFB 003.008` from `vm-<id>:5900`, recorded 7.9 s at 1280×800 via `rfbsrc` over the network; `stop` → process gone in 137 ms, validated + copied to the host in 249 ms (28 KB WebM). TCG entry pending at the time of writing |
+| 34 (`39254459700`) | `guestPort` probe forms on both guests (HTTP probe 4–5 ms, no-probe timeout, no-listener EOF, §3.9); `python3 -m http.server` reached through a second forward (T42); three key types baked by the build and accepted for `vmtc` and `root`. The first sidecar probe (`SidecarRecorderProbeTest`) failed before testing anything (the spike image has no `tini`; fixed in f7457e8, see run 36) |
 | 31 (`39193236335`) | **Spikes A and C**, KVM and TCG: slirp `hostfwd` published through Testcontainers; SSH readiness timings and the connect-before-banner behaviour; SFTP throughput; root and `vmtc` (3 key types, `sudo -n`, env prefix); `forceModeset` over SSH + sudo; the agent-less black-box guest build and boot; the shaded (maven-shade) jar against the live guests. All green. Details §3.9 and `RESULTS.md` "Run 31" |
 
 **Sandbox-only evidence** (Docker 29.8, TCG):
@@ -1839,7 +1841,7 @@ All on branch `claude/vm-testcontainer-plan-lqhfa6` of this repository (PR #9).
 - **Verification:** the requirement stories in REQUIREMENTS.md (see its BLUF for the count), each with evidence attached to a per-job Allure report; the build enforces that every test names the requirement it proves.
 - **Open:**
   - an SELinux-host acceptance run (§15 R3);
-  - the recorder sidecar over a rootless Podman network (§15 R11), exercised by step 4.0 and M4. Gradle Shadow (R12) and the SSH exec timeout (R13) were closed by spikes E and D (§3.10).
+  - the recorder sidecar on a Podman host with the CNI network backend (§15 R11 residual; the netavark path was verified in run 36). Gradle Shadow (R12) and the SSH exec timeout (R13) were closed by spikes E and D (§3.10).
 - **Adoption:** edit **§0 only**.
 - **Companion documents:** [REQUIREMENTS.md](REQUIREMENTS.md) (testable `REQ-*` stories by epic and feature; tests carry `@Requirement`) and [PLAN-STEPS.md](PLAN-STEPS.md) (the checklist to implement this plan).
 

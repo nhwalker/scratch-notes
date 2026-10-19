@@ -25,7 +25,8 @@
 5. **Attach evidence:** every integration test extends `VmIT` (standard evidence is automatic) and attaches the requirement-specific evidence named in REQUIREMENTS.md through `Evidence`/`VmEvidence`, with exactly those attachment names.
 6. **Timing-sensitive tests** (boot times, recording duration) are judged in CI on GitHub-hosted runners; a slower local machine is not a reason to relax a limit. Log it instead.
 7. **Unverified items** are marked **[U]** in PLAN.md. When a step exercises one, record the outcome in the Deviation log (worked as written, or what had to change).
-8. **Never** do the things PLAN.md §1 rules a–l forbid, even "temporarily".
+8. **Never** do the things PLAN.md §1 rules a–q forbid, even "temporarily".
+9. **Guest access is opt-in.** The default `GuestAccess.none()` must stay the default (rule m); tests that exec or copy say which access they use (`TestAccess`, PLAN.md §11.1).
 
 ---
 
@@ -34,10 +35,10 @@
 | Phase | Milestone | Content | Gate |
 |-------|-----------|---------|------|
 | 0 | — | Adopt the plan: names, versions, dev host | §0.G |
-| 1 | M1 | Build, test-support/Allure, images, guest disk, core library, exec, copy, KVM handling, CI | §1.G |
-| 2 | M2 | Screens, VNC, screenshots, keyboard, UEFI | §2.G |
-| 3 | M3 | Image sources (OCI, full HTTP, reference guest), registry fixture | §3.G |
-| 4 | M4 | Screen recording, audio | §4.G |
+| 1 | M1 | Build (incl. shading), test-support/Allure, runner + recorder images, both guest disks, core library, guest access (SSH, agent, none), exec, copy, KVM handling, CI | §1.G |
+| 2 | M2 | Screens, VNC, screenshots, keyboard, UEFI, black-box guest tests, port forwards | §2.G |
+| 3 | M3 | Image sources (OCI, full HTTP, both shipped guests), registry fixture | §3.G |
+| 4 | M4 | Screen recording (recorder sidecar), audio | §4.G |
 | 5 | M5 | Hot-plug | §5.G |
 | 6 | M6 | Cleanup, JUnit extension, full traceability, release readiness | §6.G |
 
@@ -58,18 +59,18 @@
 **Verify:** for each example value you replaced, `grep -rn -F '<old value>' docs/vm-testcontainer/PLAN.md` returns nothing (the other two documents never contain the example values).
 
 ### Step 0.3 — Refresh versions
-- [ ] Look up the current releases of Gradle, Testcontainers 2.x, JUnit **5.x** (not 6), Jackson 2.x, commons-compress, xz, zstd-jni, SLF4J, AssertJ, Allure Java **2.x** (not 3) and Allure Report 2.x on Maven Central / their release pages (PLAN.md §16 item 2).
-- [ ] If a newer **patch** or **minor** exists, update §0. A new **major** (Testcontainers 3, Jackson 3, JUnit 6, Allure Java 3) is out of scope: keep the planned major and log it (PLAN.md D10).
+- [ ] Look up the current releases of Gradle, Testcontainers 2.x, JUnit **5.x** (not 6), Jackson 2.x, commons-compress, xz, zstd-jni, SLF4J, Apache MINA SSHD **2.x** (not 3), `net.i2p.crypto:eddsa`, the `com.gradleup.shadow` plugin, AssertJ, Allure Java **2.x** (not 3) and Allure Report 2.x on Maven Central / their release pages (PLAN.md §16 items 2 and 8).
+- [ ] If a newer **patch** or **minor** exists, update §0. A new **major** (Testcontainers 3, Jackson 3, JUnit 6, Allure Java 3, MINA SSHD 3) is out of scope: keep the planned major and log it (PLAN.md D10, D16).
 
 **Verify:** `git show --stat HEAD` lists `docs/vm-testcontainer/PLAN.md`, and the commit message has one `<name> <version> <source URL> <date>` line per version row.
 
 ### Step 0.4 — Record open decisions
-- [ ] Open the Deviation log (§D) and confirm its seeded items: R3 (SELinux hosts) and the UEFI verification note.
+- [ ] Open the Deviation log (§D) and confirm its seeded items: R3 (SELinux hosts), the UEFI verification note, the SSH spike results, and the three open [U] items (recorder sidecar R11, Gradle Shadow R12, `timeout -s KILL` R13).
 
-**Verify:** §D lists the three items with owner "unassigned" or a name.
+**Verify:** §D lists the seeded items with owner "unassigned" or a name.
 
 ### Step 0.5 — Prepare a development host
-- [ ] x86-64 Linux with Podman ≥ 4.9 (rootless), JDK `${JAVA_RELEASE}`, a local Gradle installation (any recent version, only to generate the wrapper), `git`, `curl`, `openssl`, `python3`.
+- [ ] x86-64 Linux with Podman ≥ 4.9 (rootless), JDK `${JAVA_RELEASE}`, a local Gradle installation (any recent version, only to generate the wrapper), `git`, `curl`, `openssl`, `python3`, `ssh-keygen` (OpenSSH client; generates the guests' test key in step 1.10).
 - [ ] Optional but recommended: usable `/dev/kvm` (`ls -l /dev/kvm`; your user must be able to open it read/write).
 - [ ] Start the Podman API service and export the environment the tests use:
 
@@ -85,7 +86,7 @@
 - With KVM: `test -r /dev/kvm -a -w /dev/kvm && echo usable` prints `usable`.
 
 ### Step 0.6 — Read the critical parts of the plan
-- [ ] PLAN.md §1 (rules a–l), §4, §7.1, §8.1, §9.2, §9.6; REQUIREMENTS.md §2–§3.
+- [ ] PLAN.md §1 (rules a–q), §4, §7.1, §8.1, §8.5, §9.2, §9.4, §9.6, §9.8, §9.14, §10.1; REQUIREMENTS.md §2–§3.
 
 **Verify:** none (reading). Tick when done.
 
@@ -99,8 +100,8 @@
 ### Step 1.1 — Gradle skeleton
 - [ ] Run `gradle wrapper --gradle-version <GRADLE_VERSION>` to create the wrapper; use `./gradlew` from here on.
 - [ ] `settings.gradle`: `rootProject.name = '${ROOT_PROJECT}'`, `include 'lib', 'junit5', 'test-support', 'images', 'it'`.
-- [ ] `gradle.properties` with every key of PLAN.md §5 (group, version, artifactLib, artifactJunit, basePackage, imageRegistry, imageRunnerName, imageGuestName, imageTagSuffix, labelPrefix, syspropPrefix, envPrefix, cacheDirName, javaRelease, ubiImage, reqDocUrl) plus `traceabilityRequireFullCoverage=false`.
-- [ ] `gradle/libs.versions.toml` with the §0 versions: testcontainers, junit-bom, junit-platform-launcher (no version; the BOM supplies it), jackson-databind, commons-compress, xz, zstd-jni, slf4j, assertj, allure-bom, allure-commandline.
+- [ ] `gradle.properties` with every key of PLAN.md §5 (group, version, artifactLib, artifactJunit, basePackage, imageRegistry, imageRunnerName, imageRecorderName, imageGuestName, imageGuestBlackboxName, imageTagSuffix, labelPrefix, syspropPrefix, envPrefix, cacheDirName, javaRelease, ubiImage, reqDocUrl) plus `traceabilityRequireFullCoverage=false`.
+- [ ] `gradle/libs.versions.toml` with the §0 versions: testcontainers, junit-bom, junit-platform-launcher (no version; the BOM supplies it), jackson-databind, commons-compress, xz, zstd-jni, slf4j, sshd-core, sshd-sftp, eddsa, assertj, allure-bom, allure-commandline; `[plugins]` alias `shadow = { id = "com.gradleup.shadow", version = "<SHADOW_PLUGIN_VERSION>" }`.
 - [ ] Empty `build.gradle` per subproject and a root `build.gradle`.
 
 **Files:** `settings.gradle`, `gradle.properties`, `gradle/libs.versions.toml`, `gradle/wrapper/*`, `build.gradle`, `{lib,junit5,test-support,images,it}/build.gradle`
@@ -109,7 +110,9 @@
 
 ### Step 1.2 — Build conventions and publishing
 - [ ] Java toolchain `${JAVA_RELEASE}`; `options.compilerArgs += ['-Xlint:all,-processing,-requires-automatic,-requires-transitive-automatic,-this-escape', '-Werror']` in every module.
-- [ ] `:lib`: `java-library` + `maven-publish`, `artifactId = artifactLib`; dependencies exactly as PLAN.md §9.1 (api: Testcontainers; implementation: jackson-databind, commons-compress, xz, zstd-jni; testImplementation: JUnit BOM + `junit-jupiter`, AssertJ, slf4j-simple, `project(':test-support')`; testRuntimeOnly: `junit-platform-launcher`).
+- [ ] `:lib`: `java-library` + `maven-publish` + `alias(libs.plugins.shadow)`, `artifactId = artifactLib`; dependencies exactly as PLAN.md §9.1 (api: Testcontainers; implementation: jackson-databind, commons-compress, xz, zstd-jni; a custom `shaded` configuration with sshd-core, sshd-sftp, eddsa, extended by `compileClasspath` and `testRuntimeClasspath`; testImplementation: JUnit BOM + `junit-jupiter`, AssertJ, slf4j-simple, `project(':test-support')`; testRuntimeOnly: `junit-platform-launcher`).
+- [ ] `:lib` `shadowJar` per PLAN.md §11.1: `configurations = [configurations.shaded]`, the two `relocate` calls to `<basePackage>.shaded.…`, `mergeServiceFiles()`, signature-file excludes, `archiveClassifier = ''`; the plain `jar` gets classifier `plain`; `publishing` publishes the shadow jar with a POM that lists only `api`/`implementation` dependencies (the shadow plugin's `shadow` component or an explicit `pom.withXml` filter). `assemble` and `publishToMavenLocal` depend on `shadowJar`.
+- [ ] Every `Test` task forces `org.slf4j:slf4j-api:<SLF4J_VERSION>` on `testRuntimeClasspath` (PLAN.md §3.7).
 - [ ] `:junit5`: `java-library` + `maven-publish`, `artifactId = artifactJunit`, `api project(':lib')`, `api 'org.junit.jupiter:junit-jupiter-api'`, same test dependencies.
 - [ ] `:test-support`: `java-library`, **not** published; dependencies per PLAN.md §11.4 (`api platform(allure-bom)`, `api allure-jupiter`, `api allure-java-commons`, `api junit-jupiter-api`, `api jackson-databind`).
 - [ ] `:lib` gets `src/main/java/module-info.java` (module name = `${BASE_PACKAGE}`); `requires transitive org.testcontainers;` etc. Exports are filled in step 1.10.
@@ -119,28 +122,29 @@
 **Verify:**
 - `./gradlew build` succeeds (no sources yet is fine).
 - `./gradlew publishToMavenLocal` creates `~/.m2/repository/<group as path>/<artifactLib>/<version>/<artifactLib>-<version>.pom` and the same for `<artifactJunit>`, and `grep -c '<artifactId><artifactLib></artifactId>' <pom>` prints `1`.
-- `./gradlew :lib:dependencies --configuration runtimeClasspath` shows no `land.oras` and only the §9.1 direct dependencies.
+- `./gradlew :lib:dependencies --configuration runtimeClasspath` shows no `land.oras`, no `org.bouncycastle` and only the §9.1 direct dependencies; `--configuration shaded` shows exactly sshd-core, sshd-sftp, eddsa and their transitive closure.
+- `./gradlew :lib:shadowJar` then `unzip -l lib/build/libs/<artifactLib>-<version>.jar | grep -c 'shaded/org/apache/sshd/'` prints a number > 0 and `unzip -l … | grep -c '^.* org/apache/sshd/'` prints `0` (the relocation works; R12 closes in §D once U20 passes in step 1.14b).
+- The POM in `~/.m2` after `publishToMavenLocal` contains no `org.apache.sshd` or `net.i2p.crypto` dependency.
 
-**Requirements:** REQ-BLD-02, REQ-BLD-03, REQ-PLAT-03, REQ-OCI-06
+**Requirements:** REQ-BLD-02, REQ-BLD-03, REQ-BLD-08 (build part), REQ-PLAT-03, REQ-OCI-06
 
 ### Step 1.3 — Generated constants
 - [ ] Task `:lib:generateConstants` writes `VmtcConstants.java` exactly per PLAN.md §11.3 into `build/generated/sources/vmtc/java/<basePackage path>/`; register the directory as a `main` source dir; `compileJava` depends on it; declare the `gradle.properties` values as task inputs.
-- [ ] `RunnerVariant` enum (`SLIM`, `MEDIA`) must exist for it to compile (create it now in `${BASE_PACKAGE}`).
-- [ ] **U5 `VmtcConstantsTest`:** the `:lib:test` task passes each relevant `gradle.properties` value as a system property (`systemProperty 'expected.version', version` …); the test asserts every constant and both `defaultRunnerImage(...)` strings and `referenceGuestImage()`, attaching `constants.txt`. (U5 cannot carry `@Requirement` yet — test-support comes in 1.5; add the annotation there.)
+- [ ] **U5 `VmtcConstantsTest`:** the `:lib:test` task passes each relevant `gradle.properties` value as a system property (`systemProperty 'expected.version', version` …); the test asserts every constant and the four image methods (`defaultRunnerImage()`, `defaultRecorderImage()`, `referenceGuestImage()`, `blackBoxGuestImage()`), attaching `constants.txt`. (U5 cannot carry `@Requirement` yet — test-support comes in 1.5; add the annotation there.)
 
 **Spec:** PLAN.md §11.3
 **Verify:** `./gradlew :lib:test --tests '*VmtcConstantsTest'` passes; changing `version` in `gradle.properties` and re-running regenerates the file (check its content), then revert.
 **Requirements:** REQ-BLD-01 (U5)
 
 ### Step 1.4 — Parameter-hygiene and dependency checks
-- [ ] Root task `checkParameterHygiene` implementing **every** rule of PLAN.md §0 "Parameter-hygiene check" and §11.5: `git grep --untracked -n -w -F -- <value>` for `group`, `basePackage`, `imageRegistry`, `imageRunnerName`, `imageGuestName`, `labelPrefix`; allowed: `gradle.properties`, any `build/` path, `docs/vm-testcontainer/*.md`, `README.md`; `group` and `basePackage` additionally allowed in `*.java`. Plus the `lib/src/main` greps (`ProcessBuilder`, `Runtime.getRuntime().exec`, `throw new RuntimeException(`, `throw new UncheckedIOException(`), the `ci.yml` cron grep (skip with a WARN until the file exists in step 1.24), and the `@Disabled` grep over all test source sets. Print each offending `file:line`.
-- [ ] Root task `checkDependencies` per PLAN.md §11.5: compares `:lib`'s declared `api` and `implementation` dependencies (`group:name`) with the §9.1 table and fails on any difference.
+- [ ] Root task `checkParameterHygiene` implementing **every** rule of PLAN.md §0 "Parameter-hygiene check" and §11.5: `git grep --untracked -n -w -F -- <value>` for `group`, `basePackage`, `imageRegistry`, `imageRunnerName`, `imageRecorderName`, `imageGuestName`, `imageGuestBlackboxName`, `labelPrefix`; allowed: `gradle.properties`, any `build/` path, `docs/vm-testcontainer/*.md`, `README.md`; `group` and `basePackage` additionally allowed in `*.java`. Plus the `lib/src/main` greps (`ProcessBuilder`, `Runtime.getRuntime().exec`, `throw new RuntimeException(`, `throw new UncheckedIOException(`), the `ci.yml` cron grep (skip with a WARN until the file exists in step 1.24), and the `@Disabled` grep over all test source sets. Print each offending `file:line`.
+- [ ] Root task `checkDependencies` per PLAN.md §11.5: compares `:lib`'s declared `api`, `implementation` and `shaded` dependencies (`group:name`) with the §9.1 table, fails on any difference, and fails if any `:lib` configuration resolves an `org.bouncycastle` artifact.
 
 **Spec:** PLAN.md §0, §11.5
 **Verify:**
 - Both tasks pass on the clean tree.
 - Create `scratch.txt` containing the `imageRegistry` value (do **not** `git add` it) → `checkParameterHygiene` fails naming `scratch.txt:1`; delete it.
-- Add `implementation 'com.google.guava:guava:33.4.0-jre'` to `lib/build.gradle` → `checkDependencies` fails naming it; revert.
+- Add `implementation 'com.google.guava:guava:33.4.0-jre'` to `lib/build.gradle` → `checkDependencies` fails naming it; revert. Add `shaded 'org.bouncycastle:bcprov-jdk18on:1.80'` → fails naming Bouncy Castle; revert.
 
 **Requirements:** REQ-BLD-01, REQ-BLD-03, REQ-ENG-03, REQ-ERR-01 (check part), REQ-OCI-06
 
@@ -172,36 +176,38 @@
 **Verify:** after `./gradlew :lib:test allureReport`, `build/allure-report/index.html` exists and is > 1 MB; opening it in a browser from disk shows *Behaviors → Guest Contract, Build & Tooling → BLD: Build, publishing, retargeting and reporting → REQ-BLD-01 …* with U5 and its `constants.txt` attachment.
 **Requirements:** REQ-BLD-07
 
-### Step 1.7 — Runner image sources
+### Step 1.7 — Runner and recorder image sources
 - [ ] `images/runner/repos/epel.repo` = PLAN.md Appendix A.1, `images/runner/repos/rocky.repo` = Appendix A.2 (byte-exact).
-- [ ] `images/runner/Containerfile` = PLAN.md §6.3 (byte-exact).
-- [ ] `images/runner/scripts/vmtc-entrypoint`: implement PLAN.md §7.1 **steps 0–11 in that order** (defaults with `${VAR:-default}`, trap installed before QEMU starts, the `wait` loop) and the QEMU command line of §8.1 (array-built, no `eval`). Include UEFI per §8.4.
-- [ ] `images/runner/scripts/vmtc-rec`: implement PLAN.md §7.2 (used from M4, but the Containerfile needs the file now), including the `Duration:` → decimal-seconds conversion.
+- [ ] `images/runner/Containerfile` = PLAN.md §6.3 (byte-exact); `images/recorder/Containerfile` = §6.5 (byte-exact).
+- [ ] `images/runner/scripts/vmtc-entrypoint`: implement PLAN.md §7.1 **steps 0–11 in that order** (defaults with `${VAR:-default}`, including `VM_PORT_FORWARDS` with the `:-` default; trap installed before QEMU starts; the `wait` loop) and the QEMU command line of §8.1 (array-built, no `eval`, `hostfwd` appended to `net0`). Include UEFI per §8.4.
+- [ ] `images/recorder/scripts/vmtc-rec`: implement PLAN.md §7.2 (used from M4, but the Containerfile needs the file now): `<vnc-host> <vnc-port>` arguments, `/rec/` paths, `status` prints `stopped` for unknown names, the `Duration:` → decimal-seconds conversion.
 - [ ] If `shellcheck` is available, run it on both scripts and fix findings.
 
-**Spec:** PLAN.md §6.2, §6.3, §7, §8.1, §8.4, Appendix A.1–A.2
-**Verify:** `bash -n images/runner/scripts/vmtc-entrypoint images/runner/scripts/vmtc-rec` succeeds; `grep -n 'trap on_term' images/runner/scripts/vmtc-entrypoint` appears **before** the line that starts QEMU.
-**Requirements:** REQ-IMG-01, REQ-IMG-02, REQ-IMG-05
+**Spec:** PLAN.md §6.2, §6.3, §6.5, §7, §8.1, §8.4, §8.5, Appendix A.1–A.2
+**Verify:** `bash -n images/runner/scripts/vmtc-entrypoint images/recorder/scripts/vmtc-rec` succeeds; `grep -n 'trap on_term' images/runner/scripts/vmtc-entrypoint` appears **before** the line that starts QEMU; `env -i bash -c 'set -u; source <(sed -n "/^HOSTFWD=/,/^done/p" images/runner/scripts/vmtc-entrypoint); echo ok'` prints `ok` (unset `VM_PORT_FORWARDS` tolerated, PLAN.md §7.1 step 6a).
+**Requirements:** REQ-IMG-01, REQ-IMG-02, REQ-IMG-05, REQ-IMG-06
 
 ### Step 1.8 — Image build, verification and push tasks
-- [ ] In `images/build.gradle`: `buildRunnerSlim`, `buildRunnerMedia`, `verifyRunnerImages`, `pushImages` per PLAN.md §11.2 (engine from `-PcontainerEngine`, default `podman`; `-PnoCache=true` support; declare inputs = `images/runner/**`, outputs = an image-ID marker file under `build/`).
-- [ ] `verifyRunnerImages` runs checks 1–10 of PLAN.md §6.4 in each image (`<engine> run --rm --entrypoint /bin/bash <image> -c '<check>'`), checks 5 and 6 on the host. Check 10 queries only packages the Containerfile installed (`qemu-kvm-core`, `tini`, `jq`); base-layer packages give an opaque id (PLAN.md §6.4).
+- [ ] In `images/build.gradle`: `buildRunner`, `buildRecorder` (copies `images/runner/repos/*` into `images/recorder/repos/` first), `verifyRunnerImages`, `pushImages` per PLAN.md §11.2 (engine from `-PcontainerEngine`, default `podman`; `-PnoCache=true` support; declare inputs = `images/runner/**` / `images/recorder/**`, outputs = an image-ID marker file under `build/`).
+- [ ] `verifyRunnerImages` runs checks 1–11 of PLAN.md §6.4 against the image each check names (`<engine> run --rm --entrypoint /bin/bash <image> -c '<check>'`), checks 5 and 6 on the host for both images. Check 10 queries only packages the Containerfiles installed; base-layer packages give an opaque id (PLAN.md §6.4).
 
-**Spec:** PLAN.md §6.1, §6.4, §11.2
-**Verify:** `./gradlew :images:verifyRunnerImages` succeeds and prints each check's result; `podman images` shows both tags; `./gradlew :images:pushImages` reports the task as `SKIPPED` without `-PpushImages=true`. Build time per image is in the order of a minute (PLAN.md §12.2; log large differences).
-**Requirements:** REQ-IMG-01, REQ-IMG-02, REQ-IMG-03, REQ-IMG-04, REQ-IMG-05 (check part)
+**Spec:** PLAN.md §6.1, §6.4, §6.5, §11.2
+**Verify:** `./gradlew :images:verifyRunnerImages` succeeds and prints each check's result for both images; `podman images` shows both tags with the right `role` labels; `./gradlew :images:pushImages` reports the task as `SKIPPED` without `-PpushImages=true`. Build time per image is in the order of a minute (PLAN.md §12.2; log large differences, and record the recorder image's size and build time in §D: they are [U]).
+**Requirements:** REQ-IMG-01, REQ-IMG-02, REQ-IMG-03, REQ-IMG-04, REQ-IMG-05, REQ-IMG-06 (check part)
 
 ### Step 1.9 — Smoke-test the entrypoint by hand (no Java yet)
-- [ ] Download the stock guest and boot it in the slim runner:
+- [ ] Download the stock guest and boot it in the runner, with an SSH forward:
 
   ```bash
   GUEST_BASE_URL='<guestBaseUrl from PLAN.md §0>'; GUEST_BASE_SHA256='<guestBaseSha256>'
-  SLIM='<imageRegistry>/<imageRunnerName>:<version>-<imageTagSuffix>'
+  RUNNER='<imageRegistry>/<imageRunnerName>:<version>-<imageTagSuffix>'
   mkdir -p /tmp/vmtc-smoke && cd /tmp/vmtc-smoke
   curl -fL -o base.qcow2 "$GUEST_BASE_URL" && echo "$GUEST_BASE_SHA256  base.qcow2" | sha256sum -c -
-  podman run -d --name vmtc-smoke [--device /dev/kvm] -v "$PWD/base.qcow2:/vm/base/disk.img:ro" "$SLIM"
+  podman run -d --name vmtc-smoke [--device /dev/kvm] -e VM_PORT_FORWARDS=22:10000 -p 127.0.0.1::10000 -v "$PWD/base.qcow2:/vm/base/disk.img:ro" "$RUNNER"
   timeout 60 podman logs -f vmtc-smoke   # expect VMTC_ACCEL kvm|tcg, VMTC_QEMU_STARTING <epoch>, VMTC_READY; Ctrl-C or wait for the timeout
   ```
+
+- [ ] Observe rule n: `nc -z 127.0.0.1 $(podman port vmtc-smoke 10000/tcp | cut -d: -f2)` succeeds **at once** (slirp), while `timeout 3 nc 127.0.0.1 <port> </dev/null | head -c 4` prints `SSH-` only after the guest has booted (~15–20 s KVM). Record both times in the commit message.
 
 - [ ] Ping the guest agent through the in-image `socat` (retry until the guest has booted: ~15 s KVM, ~70 s TCG):
 
@@ -211,39 +217,40 @@
   ```
 
 - [ ] `time podman stop -t 15 vmtc-smoke` → returns well under 15 s (the trap quits QEMU via the internal QMP socket); then `podman rm vmtc-smoke`.
-- [ ] Error paths: run **without** the `-v` → logs `VMTC_ERROR no base disk`, exit code 2 (`podman wait`). Run **with** the `-v` mount, `-e VM_ACCEL=kvm` and **no** `--device` → `VMTC_ERROR kvm requested but /dev/kvm unusable`, exit code 3.
+- [ ] Error paths: run **without** the `-v` → logs `VMTC_ERROR no base disk`, exit code 2 (`podman wait`). Run **with** the `-v` mount, `-e VM_ACCEL=kvm` and **no** `--device` → `VMTC_ERROR kvm requested but /dev/kvm unusable`, exit code 3. Run **without** `-e VM_PORT_FORWARDS` → still reaches `VMTC_READY` (no `unbound variable`).
 
-**Verify:** all four bullets behave as stated. Record the measured times in the step's commit message.
+**Verify:** all five bullets behave as stated. Record the measured times in the step's commit message.
 **Requirements:** REQ-LIFE-04 (manual precursor), PLAN.md §7.1
 
-### Step 1.10 — Reference guest build
+### Step 1.10 — Guest image builds (reference and black-box)
 - [ ] `images/guest/guest.properties` with `baseUrl=<guestBaseUrl>` and `baseSha256=<guestBaseSha256>`.
-- [ ] `images/guest/customize.sh` implementing PLAN.md §10.3 steps 1–4 with the signature given there (`set -euo pipefail`; `VM_ACCEL=auto`; `/vm/out` mount; add `:z`/`,z` to the volume options only when `/sys/fs/selinux/enforce` contains `1`), followed by the REQ-GUEST-05 format checks.
-- [ ] Gradle `downloadGuestBase` and `buildGuestDisk` per PLAN.md §11.2.
+- [ ] `images/guest/customize.sh` implementing PLAN.md §10.3 steps 1–4 with the signature and the `GUEST_VARIANT` / `SSH_PUBKEY_FILES` environment given there (`set -euo pipefail`; the seed built from the two YAML parts with the key lines substituted; `VM_ACCEL=auto`; `/vm/out` mount; add `:z`/`,z` to the volume options only when `/sys/fs/selinux/enforce` contains `1`; output file name by variant), followed by the REQ-GUEST-05 format checks. **Pitfall from the spike:** never compute the output name with a `&&` list inside `$(…)` under `set -e`; use `if`/`then` (the spike lost a CI run to that).
+- [ ] Gradle `downloadGuestBase`, `generateTestSshKey`, `buildGuestDisk`, `buildBlackBoxGuestDisk`, `buildGuestDisks` per PLAN.md §11.2; `images/build/` is git-ignored.
 
 **Spec:** PLAN.md §10.3, §11.2
 **Verify:**
-- `./gradlew :images:buildGuestDisk` succeeds.
-- `grep -a -E 'VMTC_CUSTOMIZE_DONE|DNF_RC=0' images/build/guest/work/out/serial.log` prints both lines.
-- `images/build/guest/work/run/rocky9-vmtc.qcow2` exists (≈ 0.8 GB, PLAN.md §10.3).
-- `podman image exists <imageRegistry>/<imageGuestName>:<version>` succeeds; the task output shows the format checks (one layer, uid/gid 107).
-- KVM build takes about 1.5 min (PLAN.md §12.2).
+- `./gradlew :images:buildGuestDisks` succeeds.
+- `grep -a -E 'VMTC_CUSTOMIZE_DONE|DNF_RC=0' images/build/guest/work/out/serial.log` prints both lines; `grep -a -E 'AGENT_REMOVED|VMTC_CUSTOMIZE_DONE' images/build/guest/work-blackbox/out/serial.log` prints both.
+- `images/build/guest/work/run/rocky9-vmtc.qcow2` and `images/build/guest/work-blackbox/run/rocky9-vmtc-blackbox.qcow2` exist (≈ 0.8 GB each, PLAN.md §10.3); `images/build/guest/ssh/id_ed25519{,.pub}` exist.
+- `podman image exists` succeeds for `<imageRegistry>/<imageGuestName>:<version>` and `<imageRegistry>/<imageGuestBlackboxName>:<version>`; the task output shows the format checks (one layer, uid/gid 107).
+- KVM builds take about 1.5 min each (PLAN.md §12.2).
+- Hand check of the SSH identities: boot the black-box disk as in step 1.9 (`-v …/rocky9-vmtc-blackbox.qcow2:/vm/base/disk.img:ro`), then `ssh -o StrictHostKeyChecking=no -p <mapped 10000> root@127.0.0.1 'id -un; rpm -q qemu-guest-agent'` (password `vmtc`) prints `root` and `package qemu-guest-agent is not installed`; `ssh -i images/build/guest/ssh/id_ed25519 -p <port> vmtc@127.0.0.1 'sudo -n id -u'` prints `0`.
 
-**Requirements:** REQ-GUEST-04 (artefact), REQ-GUEST-05 (check part)
+**Requirements:** REQ-GUEST-04 (artefact), REQ-GUEST-05 (check part), REQ-GUEST-08 (check part), REQ-GUEST-09 (hand check)
 
 ### Step 1.11 — Core types and module exports
-- [ ] Create every package and type of PLAN.md §9.1 that M1 needs, as **compilable stubs where the behaviour comes later**: `QemuVmContainer` (stub), `VmImage` with its four nested records and the `fromPath`/`fromUrl`/`baked` factories (others throw `UnsupportedOperationException` until Phase 3), `KvmMode`, `Accelerator`, `Firmware`, `ExecRequest`, `GuestExecResult`, `Warnings`, `VmtcException` and **all** subclasses listed in §9.1 (each with `serialVersionUID`), `qmp.QmpException`; and one public type per remaining exported package so `module-info` can export it (`image.VmImageCache` shell, `qga.GuestAgentClient` shell, `display.VmScreen`, `display.VncEndpoint`, `display.RecordingOptions`, `display.KeyboardInput`, `display.ScreenRecording`, `audio.AudioRecording`, `hotplug.DeviceSpec` with its nested records, `hotplug.Devices`, `hotplug.DiskBus`, `hotplug.HotplugHandle`, `hotplug.CdromDrive`, `cloudinit.CloudInitSeed` shell). Interfaces may be empty; records may be complete.
-- [ ] `module-info.java`: export every package except `${BASE_PACKAGE}.internal`.
-- [ ] **U14 `ApiShapeTest`:** reflection over the public exception types (unchecked, extend `VmtcException`); `ModuleDescriptor.read(QemuVmContainer.class.getResourceAsStream("/module-info.class"))` → export set; class-file major version of `QemuVmContainer.class` (read bytes 6–7) = 44 + `${JAVA_RELEASE}`. Evidence: `exception-types.txt`, `module-exports.txt`, `class-version.txt`.
+- [ ] Create every package and type of PLAN.md §9.1 that M1 needs, as **compilable stubs where the behaviour comes later**: `QemuVmContainer` (stub), `VmImage` with its four nested records and the `fromPath`/`fromUrl`/`baked` factories (others throw `UnsupportedOperationException` until Phase 3), `KvmMode`, `Accelerator`, `Firmware`, **`GuestAccess`, `SshCredentials`, `SshOptions`, `HostKeyPolicy`, `Readiness`, `Secret`** (complete: they are records/sealed types with factories), `ExecRequest`, `GuestExecResult`, `Warnings`, `VmtcException` and **all** subclasses listed in §9.1 (each with `serialVersionUID`), `qmp.QmpException`; and one public type per remaining exported package so `module-info` can export it (`image.VmImageCache` shell, `qga.GuestAgentClient` shell, `display.VmScreen`, `display.VncEndpoint`, `display.RecordingOptions`, `display.KeyboardInput`, `display.ScreenRecording`, `audio.AudioRecording`, `hotplug.DeviceSpec` with its nested records, `hotplug.Devices`, `hotplug.DiskBus`, `hotplug.HotplugHandle`, `hotplug.CdromDrive`, `cloudinit.CloudInitSeed` shell); the internal interfaces `internal.backend.VmBackend` and `internal.transport.GuestTransport` (PLAN.md §9.14). Interfaces may be empty; records may be complete.
+- [ ] `module-info.java`: export every package except `${BASE_PACKAGE}.internal`, `internal.*` and `shaded.*`.
+- [ ] **U14 `ApiShapeTest`:** reflection over the public exception types (unchecked, extend `VmtcException`); `ModuleDescriptor.read(QemuVmContainer.class.getResourceAsStream("/module-info.class"))` → export set; class-file major version of `QemuVmContainer.class` (read bytes 6–7) = 44 + `${JAVA_RELEASE}`; the protocol-neutral API scan of PLAN.md §9.14 over the listed types (allowing exactly `qmp()` and `guestAgent()`). Evidence: `exception-types.txt`, `module-exports.txt`, `class-version.txt`, `api-surface.txt`.
 
-**Spec:** PLAN.md §9.1, §9.11
+**Spec:** PLAN.md §9.1, §9.11, §9.14
 **Verify:** `./gradlew :lib:jar :lib:test --tests '*ApiShapeTest'` passes (the jar step proves every exported package has a class).
-**Requirements:** REQ-ERR-01, REQ-BLD-04, REQ-PLAT-03 (U14)
+**Requirements:** REQ-ERR-01, REQ-BLD-04, REQ-BLD-09, REQ-PLAT-03 (U14)
 
 ### Step 1.12 — Runtime overrides and `Warnings`
 - [ ] `internal.Overrides`: resolves each PLAN.md §9.1 key with precedence **builder > system property > environment > default** (D9); the environment is an injected `Map<String,String>` (default `System.getenv()`); unparsable values → `IllegalArgumentException("<key>: …")`.
 - [ ] `Warnings` per PLAN.md §9.11 (`warn`, `warnOnce`, `listen`).
-- [ ] **U6 `OverridesTest`:** table-driven over every key and each precedence level; the three invalid values. Evidence `precedence-table.txt`. (The `referenceGuest()` case is added in step 3.5.)
+- [ ] **U6 `OverridesTest`:** table-driven over every key (`kvm`, `cacheDir`, `cleanup`, `runnerImage`, `recorderImage`, `guestImage`, `blackBoxGuestImage`, `tcgTimeoutFactor`) and each precedence level; the three invalid values. Evidence `precedence-table.txt`. (The `referenceGuest()`/`blackBoxGuest()` cases are added in step 3.5.)
 
 **Spec:** PLAN.md §9.1, §9.11
 **Verify:** `./gradlew :lib:test --tests '*OverridesTest'` passes.
@@ -258,13 +265,26 @@
 **Verify:** `./gradlew :lib:test --tests '*QmpClientTest'` passes.
 **Requirements:** REQ-ERR-02 (U1)
 
-### Step 1.14 — Guest agent client
-- [ ] `qga.GuestAgentClient`: per PLAN.md §9.4 protocol and §9.2 step 10 handshake (`guest-sync-delimited`, skip `0xFF`, match id; `guest-ping`; public `ping()`); `ReentrantLock`; reconnect once on I/O error and continue; map `CommandNotFound` + "has been disabled" to `GuestCommandDisabledException`; exec (`guest-exec` + `guest-exec-status` polling 50 ms ×1.5 → 500 ms cap; `env` as `K=V` list; `exitCode = -1` when only `signal` is present; UTF-8 with replacement) and file primitives (`guest-file-open/read/write/close`, 1 MiB chunks).
+### Step 1.14 — Guest agent client and `QgaTransport`
+- [ ] `qga.GuestAgentClient`: per PLAN.md §9.4.1 protocol and §9.2 step 10 handshake (`guest-sync-delimited`, skip `0xFF`, match id; `guest-ping`; public `ping()`); `ReentrantLock`; reconnect once on I/O error and continue; map `CommandNotFound` + "has been disabled" to `GuestCommandDisabledException`; exec (`guest-exec` + `guest-exec-status` polling 50 ms ×1.5 → 500 ms cap; `env` as `K=V` list; `exitCode = -1` when only `signal` is present; UTF-8 with replacement) and file primitives (`guest-file-open/read/write/close`, 1 MiB chunks).
+- [ ] `internal.transport.QgaTransport` implementing `GuestTransport` on top of it; `internal.transport.NoTransport` throwing `GuestAccessUnavailableException` with the PLAN.md §9.4 message.
 - [ ] **U2 `GuestAgentClientTest`** with a fake QGA server: every item in PLAN.md §13.2 U2.
 
-**Spec:** PLAN.md §9.2 steps 10–11, §9.4, §9.5
+**Spec:** PLAN.md §9.2 steps 10–11, §9.4.1, §9.5, §9.14
 **Verify:** `./gradlew :lib:test --tests '*GuestAgentClientTest'` passes.
 **Requirements:** REQ-EXEC-05, REQ-EXEC-06 (unit part), REQ-GUEST-01 (unit part) (U2)
+
+### Step 1.14b — SSH transport (`SshTransport`, shaded MINA SSHD)
+- [ ] `internal.transport.SshCommandBuilder` per PLAN.md §9.4.2: single-quoting, `env`, `sudo -n`, `timeout -s KILL <ceil seconds>`, `execShell` as `/bin/sh -c`; exit-status / exit-signal mapping; the 16 MiB bounded buffers with truncated flags.
+- [ ] `internal.transport.SshTransport` per PLAN.md §9.4.2 and §9.5: `SshClient.setUpDefaultClient()`, `HostKeyPolicy` → `ServerKeyVerifier` (record the accepted key for `describe()`), password and key identities (`SecurityUtils.loadKeyPairIdentities`), `connect` + `auth` + `exec("true")` as the readiness probe, exec channels per call, reconnect once on session I/O errors, SFTP with the **synchronous handle API only** (rule o; `SftpClient.open/write(handle, offset, …)/read`), `chmod` after upload, `close()`. Map MINA's authentication failure to `SshAuthException`.
+- [ ] Only `internal.transport` may import `org.apache.sshd` (source-level check: `grep -rl 'org.apache.sshd' lib/src/main/java | grep -v internal/transport` prints nothing; add this grep to `checkParameterHygiene`).
+- [ ] **U19 `SshCommandBuilderTest`:** the PLAN.md §13.2 U19 table, evidence `command-table.txt`.
+- [ ] **U20 `ShadedJarTest`** and task `:lib:shadedSmokeTest` per PLAN.md §13.2 U20 (a separate `Test` task whose classpath is the shadow jar + Testcontainers + slf4j only, `dependsOn shadowJar`; `check` depends on it). Evidence `jar-listing.txt`, `security-facts.txt`.
+- [ ] Local end-to-end check against a real sshd before any VM exists: `podman run -d --name sshd-smoke -p 127.0.0.1::22 <any rockylinux:9-based sshd image with a known root password>` (the spike's `/tmp/sshd-spike/Dockerfile` recipe in `vm-testcontainer/spike-ssh/` history is one; or reuse the black-box guest from step 1.10 through step 1.9's forward) and drive `SshTransport` from a scratch test: password auth, `exec("id -un")`, a 20 MB SFTP put/get with checksum, wrong password → `SshAuthException`.
+
+**Spec:** PLAN.md §3.9, §9.4.2, §9.5, §11.1, §13.2 U19/U20
+**Verify:** `./gradlew :lib:test --tests '*SshCommandBuilderTest' :lib:shadedSmokeTest` passes; the scratch check prints the expected results (record them in the commit message, then delete the scratch test). Close R12 in §D if U20 passed.
+**Requirements:** REQ-ACC-09, REQ-EXEC-05, REQ-EXEC-06 (unit part), REQ-BLD-08 (U19, U20)
 
 ### Step 1.15 — KVM detection and decision
 - [ ] `internal.KvmDetector` (`present`, `usable`, `worldAccessible`) per PLAN.md §9.6.
@@ -277,13 +297,14 @@
 **Requirements:** REQ-KVM-02, REQ-KVM-03, REQ-KVM-04, REQ-KVM-05, REQ-KVM-06 (U8)
 
 ### Step 1.16 — Builder methods, validation and timeouts
-- [ ] Add to the `QemuVmContainer` stub every builder method of PLAN.md §9.2 as **fields + validation only** (behaviour comes in 1.20): `withVmImage`, `withKvm`, `withCpus`, `withMaxCpus`, `withMemoryMb`, `withMemoryHotplug`, `withScreens`, `withVncBindAddress`, `withHotplugPorts`, `withFirmware`, `withCloudInit`, `withGuestAgentTimeout`, `withExecTimeout`, `withTcgTimeoutFactor`, `withSerialLogConsumer`, `withQemuArgs`. Ranges per §9.2 → `IllegalArgumentException` in the call.
-- [ ] `internal.Timeouts` (or a method set): effective timeouts per REQ-KVM-07 — scaled defaults for guest-agent/exec/unplug when `accelerator()==TCG`, explicit values never scaled, container-start wait fixed.
-- [ ] **U9 `ConfigValidationTest`** for both, with `timeouts.txt` evidence.
+- [ ] Add to the `QemuVmContainer` stub every builder method of PLAN.md §9.2 as **fields + validation only** (behaviour comes in 1.20): `withVmImage`, `withGuestAccess`, `withReadiness`, `withGuestPortForward`, `withRecorderImage`, `withKvm`, `withCpus`, `withMaxCpus`, `withMemoryMb`, `withMemoryHotplug`, `withScreens`, `withVncBindAddress`, `withHotplugPorts`, `withFirmware`, `withCloudInit`, `withGuestReadyTimeout`, `withExecTimeout`, `withTcgTimeoutFactor`, `withSerialLogConsumer`, `withQemuArgs`. Ranges per §9.2 → `IllegalArgumentException` in the call. Defaults: access `none()`, readiness derived (PLAN.md §9.2).
+- [ ] `internal.PortForwards`: the ordered forward list (implicit SSH forward first), container-port assignment 10000+k, `VM_PORT_FORWARDS` rendering, exposed-port set, `forwardedPort` lookup.
+- [ ] `internal.Timeouts` (or a method set): effective timeouts per REQ-KVM-07 — scaled defaults for guest-ready/exec/unplug when `accelerator()==TCG`, explicit values never scaled, container-start wait fixed.
+- [ ] **U9 `ConfigValidationTest`** and **U18 `GuestAccessConfigTest`** (PLAN.md §13.2), with `timeouts.txt` and `forwards.txt` evidence.
 
-**Spec:** PLAN.md §8.2, §9.2; REQUIREMENTS.md REQ-KVM-07
-**Verify:** `./gradlew :lib:test --tests '*ConfigValidationTest'` passes.
-**Requirements:** REQ-CFG-02, REQ-DISP-01, REQ-KVM-07 (U9)
+**Spec:** PLAN.md §8.2, §8.5, §9.2; REQUIREMENTS.md REQ-KVM-07, REQ-ACC-01/03/04, REQ-NET-02/03
+**Verify:** `./gradlew :lib:test --tests '*ConfigValidationTest' --tests '*GuestAccessConfigTest'` passes.
+**Requirements:** REQ-CFG-02, REQ-DISP-01, REQ-KVM-07 (U9); REQ-ACC-01, REQ-ACC-03, REQ-ACC-04, REQ-ACC-07 (redaction), REQ-ACC-09, REQ-NET-02, REQ-NET-03 (U18)
 
 ### Step 1.17 — Image cache, `fromPath` and `baked()`
 - [ ] `image.Qcow2Header` (magic, `backingFile(Path)` → `Optional<String>`) per PLAN.md §9.3.1.
@@ -316,9 +337,9 @@
 **Requirements:** REQ-GUEST-03, REQ-GUEST-06 (unit part) (U10)
 
 ### Step 1.20 — `QemuVmContainer`: configure, wait strategy, `start()` override
-- [ ] `configure()` per PLAN.md §9.2 steps 1–6: image resolution (`VmImageCache.resolve`, a `switch` over the sealed `VmImage`), bind via `addFileSystemBind(..., BindMode.READ_ONLY, SelinuxContext)`, KVM decision → devices/annotations, ports with `PublishAllPorts=false` (rule l), labels, env (§7.1), seed files.
-- [ ] Start-time validation (`withVmImage` present, `maxmem ≥ mem`, override parsing).
-- [ ] Runner variant detection from the image label for the `DockerImageName` constructor (missing → SLIM + WARN).
+- [ ] `configure()` per PLAN.md §9.2 steps 1–6: image resolution (`VmImageCache.resolve`, a `switch` over the sealed `VmImage`), bind via `addFileSystemBind(..., BindMode.READ_ONLY, SelinuxContext)`, KVM decision → devices/annotations, ports incl. forwards with `PublishAllPorts=false` (rule l), the per-JVM network and alias (step 4a, `internal.VmtcNetwork`), labels, env (§7.1, incl. `VM_PORT_FORWARDS`), seed files.
+- [ ] Start-time validation (`withVmImage` present, `maxmem ≥ mem`, override parsing, readiness/access compatibility).
+- [ ] Image role check from the label for the `DockerImageName` constructor (missing → WARN; wrong → `IllegalArgumentException`).
 - [ ] `internal.VmWaitStrategy` implementing the §9.2 step 7 table with `StartupMessages`.
 - [ ] `start()` override (rule e): unwrap `ContainerLaunchException` to the first `VmtcException` in the cause chain.
 - [ ] Cleanup seam: a package-private static `Supplier<Integer> cleanupHook` invoked once per JVM before the first `configure()` (real implementation in step 6.1; a no-op stub now).
@@ -330,39 +351,40 @@
 **Requirements:** REQ-LIFE-04 (unit part), REQ-ERR-03 (unit part), REQ-CLN-02 (U16, U17)
 
 ### Step 1.21 — `QemuVmContainer`: post-start sequence, exec, copy, stop
-- [ ] `containerIsStarted`: PLAN.md §9.2 steps 8, 10–14 in that order (QMP connect + `VMTC_ACCEL` + PREFER WARN + timeout derivation; seed wait; QGA handshake loop; RPC-filter check; SELinux check with the non-SELinux skip; serial tailer with replay; `timings()`).
-- [ ] `internal.SerialLogTailer`, `internal.PortBindings`, `describe()`, `accelerator()`, `variant()`, `qmp()`, `guestAgent()`, `saveSerialLog`.
-- [ ] `exec(String…)`, `exec(Duration, String…)`, `exec(ExecRequest)`, `execShell(String)` per §9.4, including timeout kill and `GuestExecTimeoutException`.
-- [ ] `copyToVm(Path|byte[], String)`, `copyFromVm`, `readFromVm` per §9.5.
-- [ ] `stop()` per §9.2 (the recordings part becomes real in step 4.4).
+- [ ] `containerIsStarted`: PLAN.md §9.2 steps 8, 10–14 in that order (QMP connect + `VMTC_ACCEL` + PREFER WARN + timeout derivation; seed wait; **readiness dispatch** over `bootOnly`/`guestAgent`/`ssh`/`guestPort` with the `GuestNotReadyException`/`SshAuthException` outcomes; the agent-only RPC-filter and SELinux checks; serial tailer with replay; `timings()` incl. `sshBanner` and `guestReady`).
+- [ ] `internal.SerialLogTailer`, `internal.PortBindings`, `describe()` (incl. access, readiness, forwards, accepted host key), `accelerator()`, `guestAccess()`, `readiness()`, `forwardedPort()`, `qmp()`, `guestAgent()` (`IllegalStateException` unless agent access), `saveSerialLog`.
+- [ ] `exec(String…)`, `exec(Duration, String…)`, `exec(ExecRequest)`, `execShell(String)` delegating to the `GuestTransport` (§9.4), including timeout handling and `GuestExecTimeoutException` for both transports.
+- [ ] `copyToVm(Path|byte[], String)`, `copyFromVm`, `readFromVm` per §9.5 through the transport.
+- [ ] `stop()` per §9.2 (the recordings and recorder-container parts become real in Phase 4).
 
-**Spec:** PLAN.md §9.2, §9.4, §9.5
+**Spec:** PLAN.md §9.2, §9.4, §9.5, §9.14
 **Verify:** compiles; behaviour is verified by the `:it` tests of step 1.23.
-**Requirements:** REQ-LIFE-01, 02, 04, 05, 07, 08, 10, 11, 12; REQ-EXEC-01..04, 06; REQ-FILE-01..03 (verified in 1.23 and later)
+**Requirements:** REQ-LIFE-01, 02, 04, 05, 07, 08, 10, 11, 12; REQ-EXEC-01..04, 06; REQ-FILE-01..03; REQ-ACC-01..07, 10 (verified in 1.23 and later)
 
 ### Step 1.22 — Integration-test module and `VmIT`
-- [ ] `it/build.gradle`: depends on `:lib`, `:test-support`, `:junit5` (from step 6.2 on), JUnit, AssertJ, slf4j-simple, `junit-platform-testkit` (for T34 later); the `Test` tasks of PLAN.md §11.1 (`integrationTest`, `compatTest`, `ociAuthTestA..D` + `ociAuthTest`) with `failOnNoDiscoveredTests = false`, the tag mapping (`excludeTags`), `providers.gradleProperty` forwarding, `dependsOn ':images:verifyRunnerImages', ':images:buildGuestDisk'`, and the two `*.it.*Qcow2` system properties.
-- [ ] `it/src/test/java/…/TestImages.guest()` → `VmImage.fromPath(Path.of(System.getProperty("<syspropPrefix>.it.guestQcow2")))` for now.
-- [ ] `VmIT` base class: `@BeforeAll` warm-up (`new VmImageCache(cacheDir).resolve(TestImages.guest(), DockerClientFactory.instance().client())` once, so the cache is populated before any timed start); `register(container)`; `@AfterEach` attaches the standard evidence (REQUIREMENTS.md §3.3, via `Warnings.listen` started in `@BeforeEach`) and stops registered containers; on failure also one screenshot per screen (best effort).
+- [ ] `it/build.gradle`: depends on `:lib`, `:test-support`, `:junit5` (from step 6.2 on), JUnit, AssertJ, slf4j-simple, `junit-platform-testkit` (for T34 later); the `Test` tasks of PLAN.md §11.1 (`integrationTest`, `compatTest`, `ociAuthTestA..D` + `ociAuthTest`) with `failOnNoDiscoveredTests = false`, the tag mapping (`excludeTags`), `providers.gradleProperty` forwarding, `dependsOn ':images:verifyRunnerImages', ':images:buildGuestDisks'`, and the system properties `*.it.guestQcow2`, `*.it.blackboxQcow2`, `*.it.baseQcow2`, `*.it.sshKey`.
+- [ ] `it/src/test/java/…/TestImages.guest()` → `VmImage.fromPath(Path.of(System.getProperty("<syspropPrefix>.it.guestQcow2")))` and `TestImages.blackBox()` likewise, for now; `TestAccess` (`sshRoot`, `sshRootKey`, `sshVmtcSudo`, `agent`) per PLAN.md §11.1; the `transports` `@MethodSource`.
+- [ ] `VmIT` base class: `@BeforeAll` warm-up (`new VmImageCache(cacheDir).resolve(...)` for both guests once, so the cache is populated before any timed start); `vm()` factory (reference guest + `TestAccess.sshRoot()`); `register(container)`; `@AfterEach` attaches the standard evidence (REQUIREMENTS.md §3.3, via `Warnings.listen` started in `@BeforeEach`) and stops registered containers; on failure also one screenshot per screen (best effort).
 - [ ] `VmEvidence` (`screenshot`, `audio` with the waveform/spectrum PNG renderer, `inspect`, `qmp`) per REQUIREMENTS.md §3.3. The audio analysis (RMS, dominant frequency by DFT over ≤ 65536 samples) lives here so T11 and the evidence share it.
 
 **Spec:** PLAN.md §11.1; REQUIREMENTS.md §3.3
 **Verify:** `./gradlew :it:integrationTest -P<syspropPrefix>.kvm=DISABLE` runs (zero tests at this point is fine because `failOnNoDiscoveredTests=false`) and the dependency tasks execute.
 
 ### Step 1.23 — M1 integration tests
-- [ ] Write T1, T2, T3, T4, T20, T25, T29, T30, T32, T36, T37 exactly as PLAN.md §13.1 describes, each extending `VmIT`, annotated with its *Verifies* IDs and tagged `kvm`/`tcg` where stated, attaching the evidence its requirements name.
+- [ ] Write T1, T2, T3, T4, T20, T25, T29, T30, T32, T36, T37, T40, T41 exactly as PLAN.md §13.1 describes (T2/T3/T4/T32 parametrised over transports; T30 with its four cases; T41 with the key-type fixture), each extending `VmIT`, annotated with its *Verifies* IDs and tagged `kvm`/`tcg` where stated, attaching the evidence its requirements name.
 - [ ] Run on KVM: `./gradlew :it:integrationTest -P<syspropPrefix>.kvm=REQUIRE`.
-- [ ] Run on TCG: `./gradlew :it:integrationTest -P<syspropPrefix>.kvm=DISABLE` (expect ~1 min per boot; T25 takes 5–8 min under TCG because of the seed). T20 is skipped (assumption) on a host with usable KVM; it is only meaningful in the CI tcg job.
-- [ ] `./gradlew allureReport` and open the report: every test shows under its epic/feature/story with `container.log`, `serial.log`, `vm-config.json`, `timings.json`, `warnings.txt` and its specific evidence.
+- [ ] Run on TCG: `./gradlew :it:integrationTest -P<syspropPrefix>.kvm=DISABLE` (expect ~1–1.5 min per boot; T25 takes 5–8 min under TCG because of the seed). T20 is skipped (assumption) on a host with usable KVM; it is only meaningful in the CI tcg job.
+- [ ] `./gradlew allureReport` and open the report: every test shows under its epic/feature/story with `container.log`, `serial.log`, `vm-config.json`, `timings.json`, `warnings.txt` and its specific evidence; the transport-parametrised tests show one row per transport.
+- [ ] Record in §D whether `timeout -s KILL` ended the `sleep 61` of T32 over SSH (R13); if not, implement the fallback of PLAN.md §15 R13 and update §9.4.2.
 
 **Spec:** PLAN.md §13.1; REQUIREMENTS.md §4
-**Verify:** all listed tests pass in both runs (T20 skipped locally is acceptable); the report shows the attachments. Compare T2 times with REQ-LIFE-02.
-**Requirements:** REQ-KVM-01, 03, 04; REQ-LIFE-01, 02, 04, 05, 07, 10, 11; REQ-EXEC-01..04, 06; REQ-FILE-01..03; REQ-GUEST-06 (integration part), REQ-GUEST-07; REQ-DISK-01, 02; REQ-ENG-01; REQ-PLAT-02; REQ-CFG-03; REQ-ERR-03
+**Verify:** all listed tests pass in both runs (T20 skipped locally is acceptable); the report shows the attachments. Compare T2 times with REQ-LIFE-02 (both transports).
+**Requirements:** REQ-KVM-01, 03, 04; REQ-LIFE-01, 02, 04, 05, 07, 10, 11; REQ-EXEC-01..04, 06; REQ-FILE-01..03; REQ-ACC-01, 03, 05, 06, 07, 08, 10; REQ-GUEST-06 (integration part), REQ-GUEST-07, REQ-GUEST-09; REQ-DISK-01, 02; REQ-ENG-01; REQ-PLAT-02; REQ-CFG-03; REQ-ERR-03; REQ-DISP-03 (T40, sudo part)
 
 ### Step 1.24 — CI workflow
 - [ ] `.github/workflows/ci.yml` per PLAN.md §12.1 with jobs `unit` and `integration` (matrix `{ubuntu-24.04, kvm}`, `{ubuntu-24.04, tcg}`, `{ubuntu-26.04, kvm}`), triggers `push`, `pull_request`, weekly `schedule` (passing `-PnoCache=true`).
 - [ ] `integration` steps 1–7 of §12.1; pass `-P<syspropPrefix>.kvm=<REQUIRE|DISABLE>`. **Do not** apply the udev rule in the TCG job (T20 depends on that).
-- [ ] Cache `images/build/guest/base.qcow2` keyed by `baseSha256`.
+- [ ] Cache `images/build/guest/base.qcow2` keyed by `baseSha256`. (The two customised guests and the test key are rebuilt per run.)
 - [ ] Upload the Allure report and results, `it/build/vm-artifacts/**`, `it/build/reports/**`, and (unit) `build/reports/requirements/traceability.md`, all `if: always()`.
 
 **Spec:** PLAN.md §12.1, §12.2
@@ -377,7 +399,7 @@
   - **C:** as B, plus `~/.config/containers/containers.conf` containing `[containers]` / `annotations = ["run.oci.keep_original_groups=1"]` written **before** the service starts.
   - Write `DOCKER_HOST=unix://<sock>`, `TESTCONTAINERS_RYUK_DISABLED=true`, `<envPrefix>IT_KVM_SCENARIO=<S>` and `<envPrefix>IT_PODMAN_VERSION=$(podman --version | awk '{print $3}')` to `$GITHUB_ENV` (or print `export …` lines for local use).
 - [ ] **Run the test JVM like a logged-in user for B and C**, so `KvmDetector.usable()` is true: `sudo -iu "$USER" env XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" JAVA_HOME="$JAVA_HOME" DOCKER_HOST="$DOCKER_HOST" TESTCONTAINERS_RYUK_DISABLED=true <envPrefix>IT_KVM_SCENARIO=<S> <envPrefix>IT_PODMAN_VERSION=<v> bash -c 'cd "$GITHUB_WORKSPACE" && ./gradlew --no-daemon :it:compatTest'`. Without this the CI shell lacks the group, the library correctly decides "not usable", and the annotation path is never exercised. Verified in the spike (CI run 16): the CI-shell JVM reports `/dev/kvm` readable=false, the `sudo -iu` JVM readable=true writable=true, on both runners.
-- [ ] `KvmCompatIT` (T35) per PLAN.md §13.1, attaching `scenario.txt`, `inspect.json`, `warnings.txt`.
+- [ ] `KvmCompatIT` (T35) per PLAN.md §13.1 (default `none()` access: it needs no guest, only `VMTC_READY`), attaching `scenario.txt`, `inspect.json`, `warnings.txt`.
 - [ ] CI job `compat` (matrix ubuntu-24.04, ubuntu-26.04): `./gradlew :images:verifyRunnerImages`; for S in A, B, C: run the script, then `:it:compatTest` as above (plain invocation is fine for A); `allureReport`; uploads.
 
 **Spec:** PLAN.md §9.6, §12.1, §13.1 T35; REQUIREMENTS.md REQ-KVM-05
@@ -386,7 +408,7 @@
 
 ### 1.G — Phase 1 gate
 - [ ] `unit`, `integration` (3 entries) and `compat` jobs green on the pushed head.
-- [ ] Tests U1–U3, U5, U6, U8–U10, U14, U16, U17, T1–T4, T20, T25, T29, T30, T32, T35, T36, T37 present, annotated, passing.
+- [ ] Tests U1–U3, U5, U6, U8–U10, U14, U16–U20, T1–T4, T20, T25, T29, T30, T32, T35, T36, T37, T40, T41 present, annotated, passing.
 - [ ] `traceability.md` shows those requirements covered; Allure reports downloadable for every job.
 - [ ] Deviation log updated.
 
@@ -402,9 +424,9 @@
 **Requirements:** REQ-VNC-01, REQ-VNC-02, REQ-LIFE-08
 
 ### Step 2.2 — `VmScreen`, `VncEndpoint`, screenshots, `forceModeset`
-- [ ] Implement PLAN.md §9.7 `VmScreen` (`index`, `vnc`, `screenshot()`, `screenshot(Path)`, `forceModeset()` with the head-0 no-op); `screens()`, `screen(i)`.
+- [ ] Implement PLAN.md §9.7 `VmScreen` (`index`, `vnc`, `screenshot()`, `screenshot(Path)`, `forceModeset()` with the head-0 no-op, the `none()`/SSH-sudo behaviour) through `VmBackend` (screenshots) and the `GuestTransport` (the script); `screens()`, `screen(i)`.
 - [ ] Classpath resource `<basePackage path>/display/vmtc-fb-activate.py` = Appendix A.4 (byte-exact).
-- [ ] `startRecording` methods: throw `UnsupportedOperationException` for now (real in step 4.2).
+- [ ] `startRecording` methods: throw `UnsupportedOperationException("recording arrives in Phase 4")` for now (real in step 4.2).
 
 **Spec:** PLAN.md §9.7, Appendix A.4
 **Verify:** via T5, T6.
@@ -426,15 +448,15 @@
 **Verify:** via T22.
 **Requirements:** REQ-LIFE-09
 
-### Step 2.5 — M2 integration tests
-- [ ] Write T5, T6, T12, T22 per PLAN.md §13.1.
-- [ ] Run on KVM and TCG; regenerate the Allure report and check the screenshots render.
+### Step 2.5 — M2 integration tests (incl. black-box guest)
+- [ ] Write T5, T6, T12, T22, **T38, T39, T42** per PLAN.md §13.1 (`BlackBoxIT` uses `TestImages.blackBox()`; T42 starts `python3 -m http.server` in the guest).
+- [ ] Run on KVM and TCG; regenerate the Allure report and check the screenshots render and the black-box stories appear under *Guest access and readiness*.
 
-**Verify:** all pass in both runs. (UEFI boot of the reference guest was verified in the spike, CI run 19.)
-**Requirements:** REQ-DISP-02, REQ-DISP-03, REQ-VNC-01, REQ-VNC-02, REQ-LIFE-08, REQ-LIFE-09, REQ-LIFE-12, REQ-KEY-01
+**Verify:** all pass in both runs. (UEFI boot of the reference guest was verified in the spike, CI run 19; SSH-only operation of the black-box guest in run 31.) Compare T38 times with REQ-ACC-01.
+**Requirements:** REQ-DISP-02, REQ-DISP-03, REQ-VNC-01, REQ-VNC-02, REQ-LIFE-08, REQ-LIFE-09, REQ-LIFE-12, REQ-KEY-01, REQ-ACC-01..05, REQ-ACC-10, REQ-NET-01..03, REQ-GUEST-08, REQ-PLAT-02
 
 ### 2.G — Phase 2 gate
-- [ ] CI green; U4, T5, T6, T12, T22 present, annotated, passing; deviations logged.
+- [ ] CI green; U4, T5, T6, T12, T22, T38, T39, T42 present, annotated, passing; deviations logged.
 
 ---
 
@@ -466,16 +488,16 @@
 **Requirements:** REQ-HTTP-01..10 (T26, U12)
 
 ### Step 3.4 — `baked()` success-path fixture
-- [ ] `baked()` exists since step 1.17 (T29 covers its failure path). Add the T18 (d) fixture: `podman build` of `FROM <slim>` + `COPY disk.qcow2 /vm/base/disk.img`, tagged `localhost/vmtc-it-baked:<version>`.
+- [ ] `baked()` exists since step 1.17 (T29 covers its failure path). Add the T18 (d) fixture: `podman build` of `FROM <runner>` + `COPY disk.qcow2 /vm/base/disk.img`, tagged `localhost/vmtc-it-baked:<version>`.
 
 **Spec:** PLAN.md §9.3.4
 **Verify:** via T18 (d) in step 3.8.
 **Requirements:** REQ-DISK-05
 
 ### Step 3.5 — `referenceGuest()`
-- [ ] `VmImage.referenceGuest()` → `fromContainerDisk(override 'guestImage' or VmtcConstants.referenceGuestImage())`.
-- [ ] Extend **U6** with the resolution case.
-- [ ] Switch `TestImages.guest()` to `VmImage.referenceGuest()` (the local image from `buildGuestDisk` is used through the local fallback of step 3.1 until images are pushed; expect the `using local image` WARN in `warnings.txt`).
+- [ ] `VmImage.referenceGuest()` → `fromContainerDisk(override 'guestImage' or VmtcConstants.referenceGuestImage())`; `VmImage.blackBoxGuest()` likewise with `blackBoxGuestImage`.
+- [ ] Extend **U6** with both resolution cases.
+- [ ] Switch `TestImages.guest()` / `blackBox()` to the two factories (the local images from `buildGuestDisks` are used through the local fallback of step 3.1 until images are pushed; expect the `using local image` WARN in `warnings.txt`).
 
 **Spec:** PLAN.md §9.3, §11.1
 **Verify:** U6 passes; re-run the M1 and M2 integration tests on KVM and TCG → still green.
@@ -504,38 +526,48 @@
 **Requirements:** REQ-OCI-02..05, REQ-OCI-07, REQ-DISK-03, REQ-DISK-12
 
 ### Step 3.8 — Remaining M3 integration tests
-- [ ] T18 (a)–(g), T19, T23 per PLAN.md §13.1 (fixtures for the 0-file, 2-file, baked and backing-file images are built with `podman build` / `qemu-img` in a runner container).
+- [ ] T18 (a)–(g), T19 (agent access), T23 (transports) per PLAN.md §13.1 (fixtures for the 0-file, 2-file, baked and backing-file images are built with `podman build` / `qemu-img` in a runner container).
 - [ ] Run on KVM and TCG.
 
 **Verify:** all pass in both runs.
-**Requirements:** REQ-DISK-01..06, REQ-DISK-11, REQ-DISK-13, REQ-LIFE-03, REQ-GUEST-01, REQ-GUEST-02, REQ-GUEST-04, REQ-GUEST-05, REQ-OCI-07
+**Requirements:** REQ-DISK-01..06, REQ-DISK-11, REQ-DISK-13, REQ-LIFE-03, REQ-GUEST-01, REQ-GUEST-02, REQ-GUEST-04, REQ-GUEST-05, REQ-GUEST-09, REQ-OCI-07
 
 ### 3.G — Phase 3 gate
 - [ ] CI green incl. `oci-auth`; U11, U12, T18, T19, T23, T26, T27, T28 present, annotated, passing; deviations logged.
 
 ---
 
-## Phase 4 (M4) — Screen recording and audio
+## Phase 4 (M4) — Screen recording (recorder sidecar) and audio
+
+### Step 4.0 — Prove the sidecar network path by hand (R11)
+- [ ] `podman network create vmtc-smoke-net`; start the runner with the reference guest **on that network** with alias `vm-smoke` and `VNC_BIND=0.0.0.0` (as step 1.9 plus `--network vmtc-smoke-net --network-alias vm-smoke -e VNC_BIND=0.0.0.0`); wait for `VMTC_READY`.
+- [ ] `podman run -d --name rec-smoke --network vmtc-smoke-net <recorder image>`; then `podman exec rec-smoke getent hosts vm-smoke` resolves and `podman exec rec-smoke bash -c 'exec 3<>/dev/tcp/vm-smoke/5900 && head -c 12 <&3'` prints `RFB 003.008`.
+- [ ] If name resolution or the TCP connect fails on your Podman version, record it in §D (R11) and switch to the documented fallback (PLAN.md §15 R11: publish VNC on loopback and run the recorder with `--network host`), updating PLAN.md §9.8 before continuing.
+
+**Verify:** the RFB banner is read from the recorder container. Record Podman version and network backend (`podman info --format '{{.Host.NetworkBackend}}'`) in §D.
+**Requirements:** REQ-REC-08 (manual precursor)
 
 ### Step 4.1 — Smoke-test `vmtc-rec` by hand
-- [ ] Start a media-runner container with the reference guest (Java or `podman run` as in step 1.9), then:
+- [ ] With the two containers of step 4.0 still running:
 
   ```bash
-  podman exec <c> vmtc-rec start smoke 0 10 1000000   # → VMTC_REC_STARTED <pid>
+  podman exec rec-smoke vmtc-rec start smoke vm-smoke 5900 10 1000000   # → VMTC_REC_STARTED <pid>
   sleep 5
-  podman exec <c> vmtc-rec stop smoke 10              # → VMTC_REC_OK duration=5.xxx width=1280 height=800 (or 640 480 before a modeset)
-  podman exec <c> sh -c 'grep -H "^State:" /proc/[0-9]*/status'   # no "Z (zombie)"
+  podman exec rec-smoke vmtc-rec stop smoke 10                          # → VMTC_REC_OK duration=5.xxx width=1280 height=800 (or 640 480 before a modeset)
+  podman exec rec-smoke sh -c 'grep -H "^State:" /proc/[0-9]*/status'   # no "Z (zombie)"
+  podman cp rec-smoke:/rec/smoke.webm . && ls -l smoke.webm
   ```
 
-**Verify:** outputs as commented; `duration=` has exactly three decimals.
-**Requirements:** REQ-REC-01, REQ-IMG-05 (manual precursor)
+**Verify:** outputs as commented; `duration=` has exactly three decimals; the WebM plays. Clean up both containers and the network.
+**Requirements:** REQ-REC-01, REQ-IMG-05, REQ-IMG-06 (manual precursor)
 
-### Step 4.2 — `ScreenRecording`
-- [ ] `RecordingOptions` (fps 1..30 default 10; bitrate default 1 000 000; extend U9), `VmScreen.startRecording(...)` per PLAN.md §9.8 (`variant()` check, `VMTC_REC_STARTED` check), `ScreenRecording` (`close`, `file`, `duration`, `width`, `height`, idempotent close).
-- [ ] Registry of open recordings on the container (needed by `stop()` and the JUnit extension).
-- [ ] **U15 `RecorderCommandTest`:** every case of REQ-REC-06, with `parse-table.txt`.
+### Step 4.2 — `ScreenRecording` and the recorder container
+- [ ] Recorder container lifecycle in `QemuPodmanBackend` per PLAN.md §9.8: lazy start from `withRecorderImage`/override/default on the per-JVM network, role-label check, labels (`role=recorder`, `vm=<id>`), reuse per VM, `stop()` step 6 removal.
+- [ ] `RecordingOptions` (fps 1..30 default 10; bitrate default 1 000 000; extend U9), `VmScreen.startRecording(...)` per PLAN.md §9.8 (`vmtc-rec start <name> vm-<id> <5900+i> …` in the recorder, `VMTC_REC_STARTED` check), `ScreenRecording` (`close` runs `vmtc-rec stop` in the recorder and copies from it; `file`, `duration`, `width`, `height`, idempotent close).
+- [ ] Registry of open recordings on the VM container (needed by `stop()` and the JUnit extension).
+- [ ] **U15 `RecorderCommandTest`:** every case of REQ-REC-06, with `parse-table.txt`; the argv now carries host and port.
 
-**Spec:** PLAN.md §6.1, §7.2, §9.8
+**Spec:** PLAN.md §6.1, §6.5, §7.2, §9.8
 **Verify:** `./gradlew :lib:test --tests '*RecorderCommandTest' --tests '*ConfigValidationTest'` passes.
 **Requirements:** REQ-REC-06 (U15); REQ-CFG-02 (fps range)
 
@@ -547,21 +579,22 @@
 **Verify:** `./gradlew :lib:test --tests '*InfoCaptureParserTest'` passes.
 **Requirements:** REQ-AUD-03 (unit part) (U7)
 
-### Step 4.4 — `stop()` finalizes recordings
-- [ ] `stop()` step 1 of PLAN.md §9.2: close every open screen and audio recording (best effort, failures through `Warnings`) before QMP `quit`.
+### Step 4.4 — `stop()` finalizes recordings and removes the recorder
+- [ ] `stop()` steps 1 and 6 of PLAN.md §9.2: close every open screen and audio recording (best effort, failures through `Warnings`) before QMP `quit`; stop and remove the recorder container last.
 
-**Verify:** via T31.
-**Requirements:** REQ-LIFE-06
+**Verify:** via T31, T43.
+**Requirements:** REQ-LIFE-06, REQ-REC-09
 
 ### Step 4.5 — M4 integration tests
-- [ ] T8, T9, T10, T11, T24, T31, T33 per PLAN.md §13.1 (media tests use `RunnerVariant.MEDIA`; T8 drives `/dev/tty1`).
+- [ ] T8, T9, T10, T11, T24, T31, T43 per PLAN.md §13.1 (T8 drives `/dev/tty1`; T24 checks PID 1 and zombies in the recorder container; T43 inspects the recorder container).
 - [ ] Run on KVM and TCG; open the Allure report and play a `screen0.webm` inline; check `audio-analysis.png` shows the 1 kHz peak.
+- [ ] Record in §D (R11): recorder image size and build time, `close()` latency measured by T8 (REQ-REC-02 budget 2 s incl. the copy from the recorder container).
 
 **Verify:** all pass in both runs; the report renders the videos and the audio analysis image.
-**Requirements:** REQ-REC-01..04, REQ-REC-07, REQ-VNC-05, REQ-AUD-01..03, REQ-IMG-05, REQ-LIFE-06
+**Requirements:** REQ-REC-01..03, REQ-REC-07..09, REQ-VNC-05, REQ-AUD-01..03, REQ-IMG-05, REQ-IMG-06, REQ-LIFE-06
 
 ### 4.G — Phase 4 gate
-- [ ] CI green; U7, U15, T8–T11, T24, T31, T33 present, annotated, passing; deviations logged.
+- [ ] CI green; U7, U15, T8–T11, T24, T31, T43 present, annotated, passing; deviations logged (R11 closed or the fallback documented).
 
 ---
 
@@ -600,7 +633,7 @@
 
 ### Step 6.2 — JUnit 5 extension
 - [ ] `:junit5`: `@VmTest` registering `VmArtifactsExtension` implemented as **`AfterTestExecutionCallback`** per PLAN.md §9.13 (fields of the test instance and static fields incl. superclasses; close open recordings; save serial log; one screenshot per screen; `build/vm-artifacts/<class>/<method>/`).
-- [ ] T34 in `junit5/src/test/java` per PLAN.md §13.1: the nested `@VmTest` class is tagged `testkit-only` and excluded from the module's normal `test` task; `EngineTestKit` runs it explicitly. The `:junit5:test` task gets the same engine environment as `:it` (it starts a VM) and `dependsOn ':images:verifyRunnerImages', ':images:buildGuestDisk'` — move it to the `integration` CI job.
+- [ ] T34 in `junit5/src/test/java` per PLAN.md §13.1: the nested `@VmTest` class is tagged `testkit-only` and excluded from the module's normal `test` task; `EngineTestKit` runs it explicitly. The `:junit5:test` task gets the same engine environment as `:it` (it starts a VM with SSH root access and a recorder) and `dependsOn ':images:verifyRunnerImages', ':images:buildGuestDisks'` — move it to the `integration` CI job.
 - [ ] Replace the `VmIT` failure-screenshot code with `@VmTest` where it fits (optional).
 
 **Verify:** T34 passes; `junit5/build/vm-artifacts/<class>/<method>/` contains `serial.log`, `screen0.png` and the WebM after the run.
@@ -627,7 +660,7 @@
 **Requirements:** REQ-BLD-05, REQ-BLD-07
 
 ### Step 6.6 — User documentation
-- [ ] `README.md` (or the target repo's docs location): quick start (`QemuVmContainer` + `referenceGuest()`), Podman setup (`DOCKER_HOST`, Ryuk disabled, `/dev/kvm` and the §9.6 remediation text), image sources incl. credentials and the §10.4 publishing format, VNC usage (unauthenticated, loopback by default, D8), recording/audio, hot-plug, how to open the Allure report artifact, limits (PLAN.md §15 L1–L8).
+- [ ] `README.md` (or the target repo's docs location): quick start for a **black-box image** (`QemuVmContainer` + `fromPath`, default access, screenshots and keyboard) and for an SSH-accessible image (`withGuestAccess(GuestAccess.ssh(...))`, `exec`, `copyToVm`, port forwards), the tiered guest contract (PLAN.md §10.1), the shipped test guests and their **test-only** credentials, Podman setup (`DOCKER_HOST`, Ryuk disabled, `/dev/kvm` and the §9.6 remediation text), image sources incl. credentials and the §10.4 publishing format, VNC usage (unauthenticated, loopback by default, D8), recording (recorder sidecar image) and audio, hot-plug, how to open the Allure report artifact, limits (PLAN.md §15 L1–L10).
 - [ ] Real coordinates and image names may appear in `README.md` only (it is on the hygiene allow-list).
 
 **Verify:** the README's quick-start code block, pasted into a fresh `:it` test, compiles and passes T2's criteria.
@@ -641,7 +674,7 @@
 ### 6.G — Phase 6 gate (done)
 - [ ] All CI jobs green on the release head: `unit`, `integration` ×3, `compat` ×2, `oci-auth`.
 - [ ] Traceability with full coverage passes.
-- [ ] Every [U] item in PLAN.md exercised by the steps above has an outcome in §D, and PLAN.md is updated where reality differed.
+- [ ] Every [U] item in PLAN.md exercised by the steps above has an outcome in §D (R11 sidecar network, R12 Gradle Shadow, R13 `timeout -s KILL`, the `guestPort` readiness probe, the recorder image size), and PLAN.md is updated where reality differed.
 - [ ] §D has no open item without an owner.
 
 ---
@@ -654,6 +687,11 @@ Record every place where reality differed from PLAN.md, every [U] outcome, and e
 |---|------|------|--------------------------|-------------------------------------|----------------|
 | 1 | | 0.4 | R3: SELinux-enforcing host acceptance (REQ-DISK-10) | — | open |
 | 2 | 2026-10-18 | 0.4 | UEFI boot of the reference guest verified in the spike (CI run 19): efivars present, all checks pass | PLAN.md §8.4, §3.2, §13 T22 | closed |
+| 3 | 2026-10-19 | 0.4 | SSH guest-access spikes A/B/C (CI run 31 + local): hostfwd through Testcontainers, MINA SSHD 2.20.0 without Bouncy Castle (+ eddsa for Ed25519), relocation with maven-shade, SFTP synchronous API, agent-less black-box guest, sudo, `forceModeset` over SSH. All verified; design folded into PLAN.md (D15–D19) | PLAN.md §3.9, §8.5, §9.4, §10.1, §10.3 | closed |
+| 4 | 2026-10-19 | 4.0 | R11: recorder sidecar over a user-defined rootless Podman network is unverified (the pipeline itself is). Verify in step 4.0; fallback documented in PLAN.md §15 R11 | — | open |
+| 5 | 2026-10-19 | 1.2 / 1.14b | R12: Gradle Shadow relocation of MINA SSHD + eddsa unverified (maven-shade with the same relocations is, `vm-testcontainer/spike-ssh/pom.xml`). U20 decides | — | open |
+| 6 | 2026-10-19 | 1.23 | R13: `timeout -s KILL` as the SSH exec timeout (rule q) unverified; T32 over SSH decides, fallback in PLAN.md §15 R13 | — | open |
+| 7 | 2026-10-19 | 2.5 | `Readiness.guestPort(port, probe)` verified only in its SSH-banner form (T39 (b) covers the banner case; the probe form has no CI test yet) | — | open |
 
 ---
 

@@ -415,6 +415,21 @@ Design consequences recorded for the sub-plan:
 - The same `build-guest.sh` seed provisions users/keys/sshd for both variants; cloud-init `ssh_pwauth: true` +
   `disable_root: false` + the `sshd_config.d` drop-in are what make root password login work on GenericCloud.
 
+### Run 34 (`39254459700`, head `a51901c`): `guestPort` probe forms, HTTP through a second forward, first sidecar attempt — KVM
+
+`GuestSshProbeTest` (reference and black-box guests, KVM, Podman 4.9.3), forwards `22:10022,8080:10023,9999:10024`:
+
+| Probe through the slirp forward | Result |
+|---------------------------------|--------|
+| guest 8080 (`python3 -m http.server 8080` started over SSH), probe `HEAD / HTTP/1.0\r\n\r\n` | connect 0 ms, **64 bytes `HTTP/1.0 200 OK …` read after 4–5 ms** |
+| guest 8080, **no probe** | connect succeeded, read **timed out after 3 s** (HTTP never speaks first) |
+| guest 9999 (nothing listens), with and without probe | connect 0 ms, **EOF after 0 ms** (slirp closes the host side; not a reset, not silence) |
+
+- Conclusions for PLAN.md §8.5/§9.2: the `guestPort(p, probe)` form works for client-speaks-first protocols; the no-probe form is only for banner protocols; an immediate EOF is what "no listener yet" looks like and must be treated as "retry". The guest's `http.server` was reachable on both guests, so no guest firewall interferes (REQ-NET-01/T42).
+- All run-31 checks repeated green (three key types for `vmtc` and `root`, sudo, env prefix, `forceModeset` via sudo, SFTP 26–27 MB/s put / 48–55 MB/s get, wrong-password rejection, shaded jar).
+- **Sidecar probe (`SidecarRecorderProbeTest`) did not reach its first assertion:** the recorder container was started with entrypoint `/usr/bin/tini`, which the spike image never had (the VM containers use podman's `--init`/catatonit). Fixed in `f7457e8` (recorder uses `--init` + `sleep infinity`); outcome in run 36 below.
+- The TCG matrix entry of this job was still running when these notes were written; the KVM entry is the source of the table above.
+
 ### Spikes D and E, local sandbox (2026-10-19): SSH exec timeouts/signals, Gradle Shadow relocation, JPMS
 
 **D — `timeout`, exit signals and channel close over SSH** (MINA SSHD 2.20.0 → OpenSSH 9.9 in `rockylinux:9`, `SshMatrix --signal-tests`):

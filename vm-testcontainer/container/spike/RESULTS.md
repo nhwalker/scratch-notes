@@ -414,3 +414,31 @@ Design consequences recorded for the sub-plan:
   SFTP is on par with QGA on KVM and 2–3× faster on TCG.
 - The same `build-guest.sh` seed provisions users/keys/sshd for both variants; cloud-init `ssh_pwauth: true` +
   `disable_root: false` + the `sshd_config.d` drop-in are what make root password login work on GenericCloud.
+
+### Spikes D and E, local sandbox (2026-10-19): SSH exec timeouts/signals, Gradle Shadow relocation, JPMS
+
+**D — `timeout`, exit signals and channel close over SSH** (MINA SSHD 2.20.0 → OpenSSH 9.9 in `rockylinux:9`, `SshMatrix --signal-tests`):
+
+| Command run through the exec channel | MINA `getExitStatus()` / `getExitSignal()` | Time |
+|--------------------------------------|---------------------------------------------|------|
+| `timeout -s KILL 2 sleep 61` | **null / KILL** (not 137: `timeout` signals its whole process group, itself included, so sshd reports an exit-signal) | 2.06 s |
+| `timeout 2 sleep 61` (TERM) | 124 / null | 2.07 s |
+| `timeout --preserve-status -s KILL 2 sleep 61` | null / KILL | 2.08 s |
+| `timeout --foreground -s KILL 2 sleep 61` | **124** / null | 2.08 s |
+| `timeout --foreground -k 1 2 sleep 61` | 124 / null | 2.07 s |
+| `timeout --foreground -k 1 2 sh -c 'trap "" TERM; sleep 61'` | channel did not close within 30 s (the grandchild `sleep` keeps the pipe open; `--foreground` signals only the direct child) | 30 s |
+| `timeout -k 1 2 sh -c 'trap "" TERM; sleep 61'` | null / KILL (whole group killed after the 1 s grace) | 3.03 s |
+| `timeout --foreground -s KILL 2 sh -c 'sleep 62 & sleep 61'` | channel open 30 s (background grandchild survives) | 30 s |
+| `sh -c 'kill -9 $$'` | null / KILL | — |
+| `sh -c 'kill -TERM $$'` | null / TERM | — |
+| `sh -c 'exit 137'` | 137 / null | — |
+
+- `pgrep` afterwards found **no leftover** `sleep` processes in any case, including after the 30 s channel timeouts: closing the exec channel (try-with-resources after `waitFor` expired) ended the remaining processes on OpenSSH 9.9. `execThenClose("sleep 300", 1 s)`: graceful `close(false)` did not complete within 5 s (process still running), the hard close then killed it; no leftover.
+- **Conclusion for the plan:** the earlier assumption "exit status 137 from `timeout`" was wrong. Use non-foreground `timeout -k 1 <n>` (TERM, then KILL of the whole process group): a timeout shows as **exit status 124** or as **exit-signal KILL after ≥ n seconds**; `--foreground` must not be used (grandchildren survive and hold the channel open). Closing the channel is a reliable second line of defence here, not a replacement.
+
+**E — Gradle Shadow 9.6.1 on Gradle 9.8.1** (`scratchpad/shadow-spike`, copied as `spike-ssh/shadow-reference.build.gradle`):
+
+- Shadow 9.6.1 needs Gradle 9 APIs: evaluating the build file under Gradle 8.14.3 fails (`AdhocComponentWithVariants.addVariantsFromConfiguration(Provider, Action)` missing), so the wrapper must be generated **before** the plugin is added (an empty `build.gradle` during `gradle wrapper`).
+- A custom `shaded` configuration (sshd-core, sshd-sftp, eddsa) extended by `compileClasspath`/`runtimeClasspath`/`testRuntimeClasspath`, `shadowJar { configurations = [shaded]; relocate …; mergeServiceFiles(); archiveClassifier = '' }` produces a jar with 1396 relocated `org.apache.sshd` classes, 39 relocated `net.i2p.crypto` classes, no unrelocated copies, and a merged, **relocated** service file (`META-INF/services/<prefix>.shaded.org.apache.sshd.server.subsystem.SubsystemFactory`). Run from the jar: `eddsa=true bc=false`, Ed25519 key auth against OpenSSH succeeds.
+- **Publishing:** `from components.shadow` produced a POM with **no dependencies at all** (it only maps the plugin's own `shadow` configuration), which would hide Testcontainers from consumers. Working pattern: disable `jar`, give `shadowJar` classifier `''`, replace the outgoing artifact of `apiElements` and `runtimeElements` with `shadowJar`, and publish `from components.java`: the POM then lists `testcontainers` (compile) and the `implementation` deps (runtime) and nothing from `shaded`.
+- **JPMS:** `testcontainers-2.0.5.jar` has **no `Automatic-Module-Name` and no `module-info`**, so a `module-info.java` with `requires org.testcontainers` does not compile under Gradle 9 (`module not found`). MINA, eddsa, commons-compress and docker-java do declare automatic names; jackson-databind is a real module. Decision recorded in PLAN.md: no `module-info.java`; the jar carries `Automatic-Module-Name` instead (`jar --describe-module` → derived automatic module).

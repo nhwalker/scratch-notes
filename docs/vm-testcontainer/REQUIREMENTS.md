@@ -139,7 +139,7 @@ The check does not verify that the test named in the *Method* cell (e.g. `T18`) 
 | ID | Title | Requirement | Acceptance criteria | Evidence | Method / verified by | Source |
 |----|-------|-------------|---------------------|----------|----------------------|--------|
 | REQ-PLAT-01 | x86-64 Linux hosts | The module shall support x86-64 Linux hosts | The CI `integration` matrix runs on `ubuntu-24.04` and `ubuntu-26.04` (both x86-64) and is green | — (CI run) | Check: CI matrix | D1 |
-| REQ-PLAT-02 | Linux guests meeting the contract | The module shall run Linux x86-64 guests that meet the guest contract (PLAN.md §10.1, G1–G7). Other guest OSes are out of scope | The reference guest (Rocky 9) passes T2; every other `T*` test exercises it | standard VM evidence; `guest-info.txt` = `exec("/bin/sh","-c","cat /etc/os-release; uname -a")` | Test: T2 | D2, D3 |
+| REQ-PLAT-02 | Linux guests meeting the contract | The module shall run Linux x86-64 guests that meet the guest contract (PLAN.md §10.1, G1–G7). Other guest OSes are out of scope | The reference guest (Rocky 9) passes T2; every other `T*` test exercises it | standard VM evidence; `guest-info.txt` = `exec("/bin/sh","-c","cat /etc/os-release; uname -a")` | Test: T2 | D2, D3, D12, D13 |
 | REQ-PLAT-03 | Java release | The library shall compile to Java `${JAVA_RELEASE}` bytecode | The class-file major version of `QemuVmContainer.class` equals `44 + ${JAVA_RELEASE}` (65 for Java 21) | `class-version.txt` | Test: U14 | D4 |
 
 #### Feature ENG: Container engine

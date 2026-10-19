@@ -190,6 +190,8 @@ These are the original asks and decisions. The **testable** requirements derived
 | D9 | **Precedence:** builder call > system property > environment variable > default. Overrides change defaults only | §9.1 | REQ-CFG-01 |
 | D10 | **Test stack:** JUnit 5.14.x + Allure Java 2.35.5 (not Allure Java 3 / JUnit 6) | §0, §11.4 | REQ-BLD-07 |
 | D11 | **Reporting:** Allure report per CI job as a downloadable artifact (single-file HTML); no hosted report | §11.4, §12 | REQ-BLD-07 |
+| D12 | **Reference guest is console-only.** No GUI (display server) guest variant is built, tested or planned; screenshot, keyboard and recording tests run against the text console plus `forceModeset()`. Consumers who need a desktop bring their own guest that meets G1–G7 | §10.3 | REQ-PLAT-02, REQ-GUEST-04 |
+| D13 | **Only Rocky/RHEL-family guests are verified.** G1–G7 are written so any Linux guest can meet them, but no seed preset, spike or test exists for Debian/Ubuntu or other families, and none is planned | §10.1, §10.2 | REQ-PLAT-02 |
 
 ---
 

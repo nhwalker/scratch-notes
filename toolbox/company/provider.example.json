@@ -1,0 +1,26 @@
+{
+  "model": "company/coder",
+  "providers": {
+    "company": {
+      "name": "Company AI",
+      "package": "@opencode/ai/providers/openai-compatible",
+      "settings": { "baseURL": "https://ai.example.invalid/v1" },
+      "headers": {
+        "X-Api-Key": "{env:COMPANY_AI_API_KEY}",
+        "X-Project": "{env:COMPANY_AI_PROJECT}"
+      },
+      "models": {
+        "coder": {
+          "name": "Company Coder",
+          "modelID": "coder-model-id-on-server",
+          "capabilities": { "tools": true, "input": ["text"], "output": ["text"] },
+          "limit": { "context": 128000, "output": 16000 }
+        }
+      }
+    }
+  },
+  "policies": [
+    { "action": "provider.use", "resource": "*", "effect": "deny" },
+    { "action": "provider.use", "resource": "company", "effect": "allow" }
+  ]
+}

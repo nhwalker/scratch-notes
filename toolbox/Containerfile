@@ -61,8 +61,19 @@ RUN curl -fsSL --retry 3 -o /usr/local/bin/plannotator \
 
 # System-wide OpenCode config. OpenCode 2 reads /etc/opencode for every user:
 # opencode.json (highest precedence) plus commands/, skills/ and plugins/.
+# company/provider.json (git-ignored; see company/provider.example.json) adds
+# the company model provider and is merged in when present.
 COPY etc-opencode/ /etc/opencode/
+COPY company/ /tmp/company/
+COPY merge-opencode-config.mjs /tmp/
 RUN set -eu; \
+    if [ -f /tmp/company/provider.json ]; then \
+      node /tmp/merge-opencode-config.mjs /etc/opencode/opencode.json \
+        /etc/opencode/opencode.json /tmp/company/provider.json; \
+    else \
+      echo "WARNING: company/provider.json not found; building without the company provider." >&2; \
+    fi; \
+    rm -rf /tmp/company /tmp/merge-opencode-config.mjs /tmp/node-compile-cache; \
     mkdir -p /etc/opencode/skills; \
     cp -R /usr/local/lib/node_modules/@plannotator/opencode/skills/plannotator /etc/opencode/skills/; \
     chmod -R a+rX /etc/opencode

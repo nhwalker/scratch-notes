@@ -42,6 +42,26 @@ skill loads from `/etc/opencode`, and nothing was fetched at runtime.
 - OpenCode 2 runs one background server per user (`opencode service status|start|stop|restart`);
   its state lives in that user's `~/.local/share/opencode` and `~/.local/state/opencode`.
 
+## Company model provider
+
+OpenCode can be limited to a defined list of models from a company OpenAI-compatible API server.
+The company-specific details stay out of git:
+
+1. Copy `company/provider.example.json` to `company/provider.json` (git-ignored) and fill in:
+   - `settings.baseURL`: the server's OpenAI-compatible base URL (requests go to `<baseURL>/chat/completions`)
+   - `headers`: the real header names. Values use `{env:...}`, so each user supplies their own key
+     and quota project (`COMPANY_AI_API_KEY`, `COMPANY_AI_PROJECT` in the example)
+   - `models`: one entry per model. The key is the OpenCode ID (`company/<key>`), `modelID` is the
+     ID sent to the server, plus optional `capabilities` and `limit`
+   - `model`: the default model
+2. Build the image. `merge-opencode-config.mjs` merges the file into `/etc/opencode/opencode.json`
+   (objects merged, arrays appended). Without the file the build prints a warning and the image has
+   no company provider.
+
+The example's `policies` deny every provider except `company`, so only the declared models are
+offered, even if a user sets other providers' API keys or adds providers in their own config. The
+OpenAI-compatible client is built into OpenCode; nothing is downloaded at runtime.
+
 ## Lockdown environment variables
 
 Set as image `ENV` and in `/etc/profile.d/opencode.sh`. These are read from OpenCode's code

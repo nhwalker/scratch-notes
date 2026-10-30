@@ -77,3 +77,19 @@ COPY etc-profile.d-opencode.sh /etc/profile.d/opencode.sh
 ENV OPENCODE_DISABLE_MODELS_FETCH=1 \
     OPENCODE_DISABLE_AUTOUPDATE=1 \
     OPENCODE_DISABLE_FREE_MODELS=1
+
+# Plannotator offline settings. Read by both the plannotator CLI and the
+# OpenCode plugin; they take precedence over ~/.plannotator/config.json.
+#   PLANNOTATOR_UPDATE_CHECK / _AUTO_UPDATE  no GitHub update checks or installs
+#   PLANNOTATOR_SHARE=disabled               no share links (exact value "disabled")
+#   PLANNOTATOR_JINA                         URL annotation fetches directly, not via r.jina.ai
+#   PLANNOTATOR_PACKAGE_LOOKUP               no npm registry lookups in reviews
+#   PLANNOTATOR_SKIP_AGENT_TERMINAL_INSTALL  install-runtime agent-terminal won't download
+# The git remote check during reviews is left on.
+COPY etc-profile.d-plannotator.sh /etc/profile.d/plannotator.sh
+ENV PLANNOTATOR_UPDATE_CHECK=0 \
+    PLANNOTATOR_AUTO_UPDATE=0 \
+    PLANNOTATOR_SHARE=disabled \
+    PLANNOTATOR_JINA=0 \
+    PLANNOTATOR_PACKAGE_LOOKUP=0 \
+    PLANNOTATOR_SKIP_AGENT_TERMINAL_INSTALL=1

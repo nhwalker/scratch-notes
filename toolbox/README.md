@@ -53,6 +53,24 @@ Set as image `ENV` and in `/etc/profile.d/opencode.sh`. These are read from Open
 | `OPENCODE_DISABLE_AUTOUPDATE=1` | no update check |
 | `OPENCODE_DISABLE_FREE_MODELS=1` | hides OpenCode's free cloud models (`opencode/*`) |
 
+### Plannotator
+
+Set as image `ENV` and in `/etc/profile.d/plannotator.sh`. Read by both the `plannotator` CLI and
+the OpenCode plugin; they take precedence over each user's `~/.plannotator/config.json`. Plannotator
+has no system-wide config file, so these are the only system-wide setting (a user can unset them).
+
+| Variable | Effect |
+|---|---|
+| `PLANNOTATOR_UPDATE_CHECK=0`, `PLANNOTATOR_AUTO_UPDATE=0` | no GitHub update checks or background installs |
+| `PLANNOTATOR_SHARE=disabled` | share links refused (exact value `disabled`; anything else enables sharing) |
+| `PLANNOTATOR_JINA=0` | URL annotation fetches the page directly instead of via r.jina.ai |
+| `PLANNOTATOR_PACKAGE_LOOKUP=0` | no npm registry lookups for changed packages in reviews |
+| `PLANNOTATOR_SKIP_AGENT_TERMINAL_INSTALL=1` | `plannotator install-runtime agent-terminal` won't download |
+
+Left on deliberately: the git remote check during reviews (`PLANNOTATOR_GIT_REMOTE_CHECK`).
+Still online by nature: annotating a URL fetches that URL, and an exported guide's HTML loads its
+viewer from guides.show (override with `PLANNOTATOR_GUIDE_VIEWER_URL`).
+
 ## Why not Plannotator's `install.sh`
 
 The image does the OpenCode-relevant parts of `scripts/install.sh` explicitly:

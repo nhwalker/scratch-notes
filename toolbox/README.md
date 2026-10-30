@@ -1,16 +1,16 @@
 # opencode-toolbox
 
 A [Toolbx](https://containertoolbx.org/) image based on `registry.access.redhat.com/ubi9/toolbox`
-with OpenCode and Plannotator installed **system-wide** (nothing under any `$HOME`).
+with OpenCode 2 and Plannotator installed **system-wide** (nothing under any `$HOME`).
 
 | Component | Source | Location in image |
 |---|---|---|
 | Node.js + npm | UBI AppStream `nodejs:24` module | `/usr/bin` |
-| OpenCode | `npm install -g opencode-ai` | `/usr/local/bin/opencode` |
+| OpenCode 2 | `npm install -g @opencode/cli` | `/usr/local/bin/opencode` (and `opencode2`) |
 | Plannotator OpenCode plugin | `npm install -g --ignore-scripts @plannotator/opencode` | `/usr/local/lib/node_modules/@plannotator/opencode` |
 | Plannotator CLI | GitHub release asset, sha256 pinned in the Containerfile | `/usr/local/bin/plannotator` |
 | OpenCode system config | `etc-opencode/opencode.json` | `/etc/opencode/opencode.json` |
-| `/plannotator-*` commands, `plannotator` skill | copied from the plugin package | `/etc/opencode/commands`, `/etc/opencode/skills` |
+| `plannotator` skill | copied from the plugin package | `/etc/opencode/skills/plannotator` |
 
 ## Build, test, use
 
@@ -21,28 +21,35 @@ toolbox create --image localhost/opencode-toolbox:latest opencode
 toolbox enter opencode
 ```
 
-`test.sh` runs the image as an unprivileged user with networking off and checks that the
-plugin, commands and skill load from the system locations and that nothing is fetched at runtime.
+`test.sh` runs the image as an unprivileged user with networking off, starts OpenCode's background
+server, and checks that the plugin is active, the four `/plannotator-*` commands are registered, the
+skill loads from `/etc/opencode`, and nothing was fetched at runtime.
 
-## How OpenCode finds the system config
+## How OpenCode 2 finds the system config
 
-- `/etc/opencode/opencode.json` is OpenCode's **managed** config on Linux: always loaded, highest
-  precedence. It enables the plugin by `file://` URL so OpenCode does not download it at startup.
-- `OPENCODE_CONFIG_DIR=/etc/opencode` (image `ENV` and `/etc/profile.d/opencode.sh`) makes OpenCode
-  also load `commands/` and `skills/` from there.
-- `autoupdate` is off: versions are pinned in the image and `/usr/local` is not writable by users.
+- OpenCode 2 reads `/etc/opencode` for every user: `opencode.json` there has the highest
+  precedence (users and projects can't override it), and its `commands/`, `skills/`, `agents/`
+  and `plugins/` folders are loaded too. No environment variable is needed.
+- `opencode.json` enables the plugin by `file://` path, so OpenCode loads the copy in
+  `/usr/local/lib/node_modules` instead of downloading it at startup.
+- `"update": "disable"`: versions are pinned in the image and `/usr/local` is not writable by users.
+- The plugin registers `/plannotator-review`, `-annotate`, `-last` and `-inbox` itself on
+  OpenCode 2, so the command markdown files are not copied. The `plannotator` skill is not
+  provided by the plugin, so it is copied.
+- OpenCode 2 runs one background server per user (`opencode service status|start|stop|restart`);
+  its state lives in that user's `~/.local/share/opencode` and `~/.local/state/opencode`.
 
 ## Why not Plannotator's `install.sh`
 
 The image does the OpenCode-relevant parts of `scripts/install.sh` explicitly:
 
 1. Download `plannotator-linux-{x64,arm64}` from the GitHub release and verify its sha256.
-2. Put the `/plannotator-*` command stubs where OpenCode loads commands.
-3. Point OpenCode's `plugin` config at `@plannotator/opencode`.
+2. Install the `plannotator` skill where OpenCode loads skills.
+3. Point OpenCode's `plugins` config at `@plannotator/opencode`.
 
-The plugin's npm `postinstall` (which copies the same command stubs and skill into
-`~/.config/opencode`) is skipped with `--ignore-scripts`; the Containerfile copies those files to
-`/etc/opencode` instead.
+The plugin's npm `postinstall` (which copies command stubs and the skill into
+`~/.config/opencode`) is skipped with `--ignore-scripts`; the Containerfile copies the skill to
+`/etc/opencode` instead. The command stubs are not needed on OpenCode 2 (see above).
 
 Not done (they are for other agents or optional extras): Claude Code / Codex / Gemini / Kiro / Pi /
 Qwen integrations, the `sem` semantic-diff sidecar, `plannotator install-runtime ...`, and GitHub

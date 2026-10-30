@@ -1,4 +1,8 @@
 {
   "update": "disable",
-  "plugins": ["file:///usr/local/lib/node_modules/@plannotator/opencode"]
+  "websearch": false,
+  "plugins": ["file:///usr/local/lib/node_modules/@plannotator/opencode"],
+  "policies": [
+    { "action": "tool.use", "resource": "webfetch:*", "effect": "deny" }
+  ]
 }

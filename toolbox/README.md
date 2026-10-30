@@ -34,11 +34,24 @@ skill loads from `/etc/opencode`, and nothing was fetched at runtime.
 - `opencode.json` enables the plugin by `file://` path, so OpenCode loads the copy in
   `/usr/local/lib/node_modules` instead of downloading it at startup.
 - `"update": "disable"`: versions are pinned in the image and `/usr/local` is not writable by users.
+- `"websearch": false` and a `policies` rule denying `webfetch:*`: the model gets no web search or
+  web fetch tools. Policies in `/etc/opencode` can't be undone by user or project config.
 - The plugin registers `/plannotator-review`, `-annotate`, `-last` and `-inbox` itself on
   OpenCode 2, so the command markdown files are not copied. The `plannotator` skill is not
   provided by the plugin, so it is copied.
 - OpenCode 2 runs one background server per user (`opencode service status|start|stop|restart`);
   its state lives in that user's `~/.local/share/opencode` and `~/.local/state/opencode`.
+
+## Lockdown environment variables
+
+Set as image `ENV` and in `/etc/profile.d/opencode.sh`. These are read from OpenCode's code
+(they aren't in the V2 docs) and can be unset by a user in their own shell.
+
+| Variable | Effect |
+|---|---|
+| `OPENCODE_DISABLE_MODELS_FETCH=1` | no model-catalog fetch from models.opencode.ai; the catalog built into OpenCode is used |
+| `OPENCODE_DISABLE_AUTOUPDATE=1` | no update check |
+| `OPENCODE_DISABLE_FREE_MODELS=1` | hides OpenCode's free cloud models (`opencode/*`) |
 
 ## Why not Plannotator's `install.sh`
 

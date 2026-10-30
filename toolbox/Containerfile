@@ -66,3 +66,14 @@ RUN set -eu; \
     mkdir -p /etc/opencode/skills; \
     cp -R /usr/local/lib/node_modules/@plannotator/opencode/skills/plannotator /etc/opencode/skills/; \
     chmod -R a+rX /etc/opencode
+
+# OpenCode lockdown env (not settable from opencode.json):
+#   OPENCODE_DISABLE_MODELS_FETCH  no model-catalog fetch from models.opencode.ai;
+#                                  the catalog built into OpenCode is used instead
+#   OPENCODE_DISABLE_AUTOUPDATE    no update check (also "update": "disable")
+#   OPENCODE_DISABLE_FREE_MODELS   hide OpenCode's free cloud models (opencode/*)
+# Set as image ENV and in profile.d so login shells get them as well.
+COPY etc-profile.d-opencode.sh /etc/profile.d/opencode.sh
+ENV OPENCODE_DISABLE_MODELS_FETCH=1 \
+    OPENCODE_DISABLE_AUTOUPDATE=1 \
+    OPENCODE_DISABLE_FREE_MODELS=1

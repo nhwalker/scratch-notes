@@ -1,0 +1,95 @@
+# Toolbx image: UBI 9 + OpenCode + Plannotator (CLI + OpenCode plugin).
+# x86_64 only.
+#
+# Everything is installed system-wide (no $HOME). OpenCode reads its
+# system config from /etc/opencode (see etc-opencode/ in this directory).
+#
+# Build:  podman build -t opencode-toolbox -f Containerfile .
+# Use:    toolbox create --image localhost/opencode-toolbox opencode && toolbox enter opencode
+
+ARG BASE_IMAGE=registry.access.redhat.com/ubi9/toolbox:latest
+FROM ${BASE_IMAGE}
+
+ARG NODEJS_STREAM=24
+ARG OPENCODE_VERSION=2.2.2
+ARG PLANNOTATOR_VERSION=0.28.38
+
+LABEL com.github.containers.toolbox="true" \
+      name="opencode-toolbox" \
+      summary="UBI 9 Toolbx image with OpenCode and Plannotator" \
+      org.opencontainers.image.description="UBI 9 Toolbx image with OpenCode and Plannotator installed system-wide"
+
+# Node.js (for npm) from the UBI AppStream module stream.
+RUN dnf -y module enable nodejs:${NODEJS_STREAM} \
+ && dnf -y install nodejs npm \
+ && dnf clean all \
+ && rm -rf /var/cache/dnf
+
+# npm global prefix is /usr/local: binaries in /usr/local/bin, packages in
+# /usr/local/lib/node_modules. Nothing is written under /root.
+ENV NPM_CONFIG_PREFIX=/usr/local \
+    NPM_CONFIG_UPDATE_NOTIFIER=false \
+    NPM_CONFIG_FUND=false \
+    NPM_CONFIG_AUDIT=false
+
+# OpenCode 2 (npm package @opencode/cli; provides `opencode` and `opencode2`).
+# Its postinstall only links the platform binary from the matching
+# @opencode/cli-linux-* optional dependency, so scripts are left enabled here.
+RUN set -eu; \
+    npm install --global --cache /tmp/npm-cache "@opencode/cli@${OPENCODE_VERSION}"; \
+    rm -rf /tmp/npm-cache; \
+    opencode --version; \
+    # Drop any per-user dirs the version check created under $HOME.
+    rm -rf /root/.cache/opencode /root/.config/opencode \
+           /root/.local/share/opencode /root/.local/state/opencode; \
+    for d in /root/.cache /root/.config /root/.local/share /root/.local/state /root/.local; do \
+      rmdir "$d" 2>/dev/null || :; \
+    done
+
+# Plannotator OpenCode plugin. --ignore-scripts: its postinstall would copy
+# the command stubs and skill into ~/.config/opencode of the build user.
+# On OpenCode 2 the plugin registers the /plannotator-* commands itself, so
+# only the skill is copied (into /etc/opencode, below).
+RUN npm install --global --ignore-scripts --cache /tmp/npm-cache "@plannotator/opencode@${PLANNOTATOR_VERSION}" \
+ && rm -rf /tmp/npm-cache
+
+# Plannotator CLI: the x86_64 release binary straight from GitHub. This is
+# the same asset the upstream install.sh fetches.
+RUN curl -fsSL --retry 3 -o /usr/local/bin/plannotator \
+      "https://github.com/backnotprop/plannotator/releases/download/v${PLANNOTATOR_VERSION}/plannotator-linux-x64" \
+ && chmod 0755 /usr/local/bin/plannotator
+
+# System-wide OpenCode config. OpenCode 2 reads /etc/opencode for every user:
+# opencode.json (highest precedence) plus commands/, skills/ and plugins/.
+COPY etc-opencode/ /etc/opencode/
+RUN set -eu; \
+    mkdir -p /etc/opencode/skills; \
+    cp -R /usr/local/lib/node_modules/@plannotator/opencode/skills/plannotator /etc/opencode/skills/; \
+    chmod -R a+rX /etc/opencode
+
+# OpenCode lockdown env (not settable from opencode.json):
+#   OPENCODE_DISABLE_MODELS_FETCH  no model-catalog fetch from models.opencode.ai;
+#                                  the catalog built into OpenCode is used instead
+#   OPENCODE_DISABLE_AUTOUPDATE    no update check (also "update": "disable")
+#   OPENCODE_DISABLE_FREE_MODELS   hide OpenCode's free cloud models (opencode/*)
+# Set as image ENV and in profile.d so login shells get them as well.
+COPY etc-profile.d-opencode.sh /etc/profile.d/opencode.sh
+ENV OPENCODE_DISABLE_MODELS_FETCH=1 \
+    OPENCODE_DISABLE_AUTOUPDATE=1 \
+    OPENCODE_DISABLE_FREE_MODELS=1
+
+# Plannotator offline settings. Read by both the plannotator CLI and the
+# OpenCode plugin; they take precedence over ~/.plannotator/config.json.
+#   PLANNOTATOR_UPDATE_CHECK / _AUTO_UPDATE  no GitHub update checks or installs
+#   PLANNOTATOR_SHARE=disabled               no share links (exact value "disabled")
+#   PLANNOTATOR_JINA                         URL annotation fetches directly, not via r.jina.ai
+#   PLANNOTATOR_PACKAGE_LOOKUP               no npm registry lookups in reviews
+#   PLANNOTATOR_SKIP_AGENT_TERMINAL_INSTALL  install-runtime agent-terminal won't download
+# The git remote check during reviews is left on.
+COPY etc-profile.d-plannotator.sh /etc/profile.d/plannotator.sh
+ENV PLANNOTATOR_UPDATE_CHECK=0 \
+    PLANNOTATOR_AUTO_UPDATE=0 \
+    PLANNOTATOR_SHARE=disabled \
+    PLANNOTATOR_JINA=0 \
+    PLANNOTATOR_PACKAGE_LOOKUP=0 \
+    PLANNOTATOR_SKIP_AGENT_TERMINAL_INSTALL=1

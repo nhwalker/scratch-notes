@@ -2,13 +2,14 @@
 
 A [Toolbx](https://containertoolbx.org/) image based on `registry.access.redhat.com/ubi9/toolbox`
 with OpenCode 2 and Plannotator installed **system-wide** (nothing under any `$HOME`).
+x86_64 only.
 
 | Component | Source | Location in image |
 |---|---|---|
 | Node.js + npm | UBI AppStream `nodejs:24` module | `/usr/bin` |
 | OpenCode 2 | `npm install -g @opencode/cli` | `/usr/local/bin/opencode` (and `opencode2`) |
 | Plannotator OpenCode plugin | `npm install -g --ignore-scripts @plannotator/opencode` | `/usr/local/lib/node_modules/@plannotator/opencode` |
-| Plannotator CLI | GitHub release asset, sha256 pinned in the Containerfile | `/usr/local/bin/plannotator` |
+| Plannotator CLI | GitHub release asset `plannotator-linux-x64` | `/usr/local/bin/plannotator` |
 | OpenCode system config | `etc-opencode/opencode.json` | `/etc/opencode/opencode.json` |
 | `plannotator` skill | copied from the plugin package | `/etc/opencode/skills/plannotator` |
 
@@ -43,7 +44,7 @@ skill loads from `/etc/opencode`, and nothing was fetched at runtime.
 
 The image does the OpenCode-relevant parts of `scripts/install.sh` explicitly:
 
-1. Download `plannotator-linux-{x64,arm64}` from the GitHub release and verify its sha256.
+1. Download `plannotator-linux-x64` from the GitHub release.
 2. Install the `plannotator` skill where OpenCode loads skills.
 3. Point OpenCode's `plugins` config at `@plannotator/opencode`.
 
@@ -52,10 +53,9 @@ The plugin's npm `postinstall` (which copies command stubs and the skill into
 `/etc/opencode` instead. The command stubs are not needed on OpenCode 2 (see above).
 
 Not done (they are for other agents or optional extras): Claude Code / Codex / Gemini / Kiro / Pi /
-Qwen integrations, the `sem` semantic-diff sidecar, `plannotator install-runtime ...`, and GitHub
-build-provenance attestation checks.
+Qwen integrations, the `sem` semantic-diff sidecar, `plannotator install-runtime ...`, and the
+checksum / GitHub build-provenance checks on the downloaded binary.
 
 ## Updating versions
 
-Change the `ARG`s at the top of the Containerfile. For Plannotator, update the two
-`PLANNOTATOR_SHA256_*` values from the release's `plannotator-linux-*.sha256` files.
+Change the `ARG`s at the top of the Containerfile.

@@ -1,4 +1,5 @@
 # Toolbx image: UBI 9 + OpenCode + Plannotator (CLI + OpenCode plugin).
+# x86_64 only.
 #
 # Everything is installed system-wide (no $HOME). OpenCode reads its
 # system config from /etc/opencode (see etc-opencode/ in this directory).
@@ -12,10 +13,6 @@ FROM ${BASE_IMAGE}
 ARG NODEJS_STREAM=24
 ARG OPENCODE_VERSION=2.2.2
 ARG PLANNOTATOR_VERSION=0.28.38
-# sha256 of the GitHub release assets plannotator-linux-{x64,arm64} for
-# PLANNOTATOR_VERSION. Update together with the version.
-ARG PLANNOTATOR_SHA256_X64=0e0cbeaded05eee864e781abcf97c2cfa47babf895cf81e4ad0bd900d86f4a82
-ARG PLANNOTATOR_SHA256_ARM64=2d67740ebaf4d58edbba3190b53dba888943a5a72751e09598e6218701194943
 
 LABEL com.github.containers.toolbox="true" \
       name="opencode-toolbox" \
@@ -56,19 +53,11 @@ RUN set -eu; \
 RUN npm install --global --ignore-scripts --cache /tmp/npm-cache "@plannotator/opencode@${PLANNOTATOR_VERSION}" \
  && rm -rf /tmp/npm-cache
 
-# Plannotator CLI: the release binary straight from GitHub, checked against
-# the pinned sha256. This is the same asset the upstream install.sh fetches.
-RUN set -eu; \
-    case "$(uname -m)" in \
-      x86_64|amd64)  arch=x64;   sha="${PLANNOTATOR_SHA256_X64}" ;; \
-      aarch64|arm64) arch=arm64; sha="${PLANNOTATOR_SHA256_ARM64}" ;; \
-      *) echo "unsupported arch $(uname -m)" >&2; exit 1 ;; \
-    esac; \
-    url="https://github.com/backnotprop/plannotator/releases/download/v${PLANNOTATOR_VERSION}/plannotator-linux-${arch}"; \
-    curl -fsSL --retry 3 -o /tmp/plannotator "$url"; \
-    echo "${sha}  /tmp/plannotator" | sha256sum -c -; \
-    install -m 0755 /tmp/plannotator /usr/local/bin/plannotator; \
-    rm -f /tmp/plannotator
+# Plannotator CLI: the x86_64 release binary straight from GitHub. This is
+# the same asset the upstream install.sh fetches.
+RUN curl -fsSL --retry 3 -o /usr/local/bin/plannotator \
+      "https://github.com/backnotprop/plannotator/releases/download/v${PLANNOTATOR_VERSION}/plannotator-linux-x64" \
+ && chmod 0755 /usr/local/bin/plannotator
 
 # System-wide OpenCode config. OpenCode 2 reads /etc/opencode for every user:
 # opencode.json (highest precedence) plus commands/, skills/ and plugins/.

@@ -19,11 +19,9 @@ LABEL com.github.containers.toolbox="true" \
       summary="UBI 9 Toolbx image with OpenCode and Plannotator" \
       org.opencontainers.image.description="UBI 9 Toolbx image with OpenCode and Plannotator installed system-wide"
 
-# Node.js (for npm) from the UBI AppStream module stream. make and gcc-c++
-# let users run `plannotator install-runtime agent-terminal`, whose node-pty
-# dependency compiles native code on Linux.
+# Node.js (for npm) from the UBI AppStream module stream.
 RUN dnf -y module enable nodejs:${NODEJS_STREAM} \
- && dnf -y install nodejs npm make gcc-c++ \
+ && dnf -y install nodejs npm \
  && dnf clean all \
  && rm -rf /var/cache/dnf
 
@@ -86,12 +84,12 @@ ENV OPENCODE_DISABLE_MODELS_FETCH=1 \
 #   PLANNOTATOR_SHARE=disabled               no share links (exact value "disabled")
 #   PLANNOTATOR_JINA                         URL annotation fetches directly, not via r.jina.ai
 #   PLANNOTATOR_PACKAGE_LOOKUP               no npm registry lookups in reviews
-# Left on: the git remote check during reviews, and
-# `plannotator install-runtime agent-terminal` (an npm install that uses the
-# user's own npm settings).
+#   PLANNOTATOR_SKIP_AGENT_TERMINAL_INSTALL  install-runtime agent-terminal won't download
+# The git remote check during reviews is left on.
 COPY etc-profile.d-plannotator.sh /etc/profile.d/plannotator.sh
 ENV PLANNOTATOR_UPDATE_CHECK=0 \
     PLANNOTATOR_AUTO_UPDATE=0 \
     PLANNOTATOR_SHARE=disabled \
     PLANNOTATOR_JINA=0 \
-    PLANNOTATOR_PACKAGE_LOOKUP=0
+    PLANNOTATOR_PACKAGE_LOOKUP=0 \
+    PLANNOTATOR_SKIP_AGENT_TERMINAL_INSTALL=1

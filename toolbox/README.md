@@ -6,7 +6,7 @@ x86_64 only.
 
 | Component | Source | Location in image |
 |---|---|---|
-| Node.js + npm, `make`, `gcc-c++` | UBI AppStream (`nodejs:24` module) | `/usr/bin` |
+| Node.js + npm | UBI AppStream `nodejs:24` module | `/usr/bin` |
 | OpenCode 2 | `npm install -g @opencode/cli` | `/usr/local/bin/opencode` (and `opencode2`) |
 | Plannotator OpenCode plugin | `npm install -g --ignore-scripts @plannotator/opencode` | `/usr/local/lib/node_modules/@plannotator/opencode` |
 | Plannotator CLI | GitHub release asset `plannotator-linux-x64` | `/usr/local/bin/plannotator` |
@@ -65,14 +65,9 @@ has no system-wide config file, so these are the only system-wide setting (a use
 | `PLANNOTATOR_SHARE=disabled` | share links refused (exact value `disabled`; anything else enables sharing) |
 | `PLANNOTATOR_JINA=0` | URL annotation fetches the page directly instead of via r.jina.ai |
 | `PLANNOTATOR_PACKAGE_LOOKUP=0` | no npm registry lookups for changed packages in reviews |
+| `PLANNOTATOR_SKIP_AGENT_TERMINAL_INSTALL=1` | `plannotator install-runtime agent-terminal` won't download |
 
 Left on deliberately: the git remote check during reviews (`PLANNOTATOR_GIT_REMOTE_CHECK`).
-
-The optional agent terminal (a terminal in the annotate page) is not preinstalled. A user can
-install it with `plannotator install-runtime agent-terminal`: it runs `npm install
-@plannotator/webtui@0.1.0` into `~/.plannotator/vendor/agent-terminal/` with the user's own npm
-settings (`~/.npmrc`, `/etc/npmrc`, `NPM_CONFIG_*`, `HTTPS_PROXY`). Its `node-pty` dependency compiles
-native code, which is why the image includes `make` and `gcc-c++`.
 Still online by nature: annotating a URL fetches that URL, and an exported guide's HTML loads its
 viewer from guides.show (override with `PLANNOTATOR_GUIDE_VIEWER_URL`).
 

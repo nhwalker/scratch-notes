@@ -4,6 +4,7 @@ import io.github.nhwalker.offlinecache.catalog.Catalog;
 import io.github.nhwalker.offlinecache.catalog.CatalogEntry;
 import io.github.nhwalker.offlinecache.catalog.CatalogReader;
 import io.github.nhwalker.offlinecache.catalog.ClassifierHint;
+import io.github.nhwalker.offlinecache.mirror.Checksums;
 import io.github.nhwalker.offlinecache.mirror.OutputCleaner;
 import io.github.nhwalker.offlinecache.report.Issue;
 import io.github.nhwalker.offlinecache.report.Report;
@@ -16,6 +17,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Orchestrates a run: read catalogs → walk/download → cleanup → report (design doc §3).
@@ -61,11 +63,21 @@ public final class OfflineCacheRun {
             report.add(Issue.error("config-missing", "central-url",
                     "no Maven Central proxy URL: use --central-url or NEXUS_CENTRAL_URL"));
         } else {
-            walker.walk(catalog, report);
+            Set<Gav> visited = walker.walk(catalog, report);
+            out.println("Visited " + visited.size() + " coordinate(s).");
             try {
                 OutputCleaner.clean(config.outDir());
             } catch (IOException e) {
                 report.add(Issue.error("cleanup-failed", config.outDir().toString(), e.toString()));
+            }
+            try {
+                int generated = Checksums.writeMissingForTree(config.outDir());
+                if (generated > 0) {
+                    report.add(Issue.info("checksums-generated", config.outDir().toString(),
+                            "generated missing md5/sha1/sha256/sha512 sidecars for " + generated + " file(s)"));
+                }
+            } catch (IOException e) {
+                report.add(Issue.error("checksum-generation-failed", config.outDir().toString(), e.toString()));
             }
         }
 

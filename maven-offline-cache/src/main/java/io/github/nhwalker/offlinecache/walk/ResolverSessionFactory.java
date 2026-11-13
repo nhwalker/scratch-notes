@@ -5,9 +5,13 @@ import org.eclipse.aether.RepositorySystem;
 import org.eclipse.aether.RepositorySystemSession;
 import org.eclipse.aether.repository.Authentication;
 import org.eclipse.aether.repository.RemoteRepository;
+import org.eclipse.aether.repository.RepositoryPolicy;
 import org.eclipse.aether.supplier.RepositorySystemSupplier;
 import org.eclipse.aether.supplier.SessionBuilderSupplier;
+import org.eclipse.aether.transfer.TransferListener;
 import org.eclipse.aether.util.repository.AuthenticationBuilder;
+import org.eclipse.aether.util.repository.JreProxySelector;
+import org.eclipse.aether.util.repository.SimpleArtifactDescriptorPolicy;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -32,11 +36,43 @@ public final class ResolverSessionFactory {
         return new RepositorySystemSupplier().get();
     }
 
-    /** Caller must close the session. */
+    /** Caller must close the session. Minimal session, used by tests. */
     public static RepositorySystemSession.CloseableSession newSession(RepositorySystem system, Path localRepo) {
         return new SessionBuilderSupplier(system)
                 .get()
                 .withLocalRepositoryBaseDirectories(localRepo)
+                .build();
+    }
+
+    /**
+     * Session for a real run. Caller must close it.
+     *
+     * <ul>
+     *   <li>Checksum policy {@code warn}: Resolver keeps the file and reports problems to the
+     *       listener, which classifies real mismatches as errors (design §8).</li>
+     *   <li>Missing or broken POMs are not fatal inside Resolver; the walker reports them.</li>
+     *   <li>Proxies come from the JVM's standard settings ({@code -Dhttps.proxyHost} etc.).</li>
+     *   <li>Download threads and retries come from {@code --parallel} / {@code --retries}. The
+     *       property names are Maven Resolver 2.x configuration keys; unknown keys are ignored by
+     *       Resolver, so a wrong name would silently fall back to Resolver's default.</li>
+     * </ul>
+     */
+    public static RepositorySystemSession.CloseableSession newSession(RepositorySystem system, RunConfig config,
+                                                                      TransferListener listener) {
+        return new SessionBuilderSupplier(system)
+                .get()
+                .withLocalRepositoryBaseDirectories(config.outDir())
+                .setChecksumPolicy(RepositoryPolicy.CHECKSUM_POLICY_WARN)
+                .setUpdatePolicy(RepositoryPolicy.UPDATE_POLICY_NEVER)
+                .setArtifactDescriptorPolicy(new SimpleArtifactDescriptorPolicy(false, false))
+                .setTransferListener(listener)
+                .setProxySelector(new JreProxySelector())
+                // Do not filter requests by the repository's published prefix/group lists: behind a
+                // Nexus group repository Central's list could hide artifacts from other members.
+                .setConfigProperty("aether.remoteRepositoryFilter.prefixes", false)
+                .setConfigProperty("aether.remoteRepositoryFilter.groupId", false)
+                .setConfigProperty("aether.connector.basic.threads", config.parallelism())
+                .setConfigProperty("aether.transport.http.retryHandler.count", config.retries())
                 .build();
     }
 

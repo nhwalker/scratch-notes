@@ -15,6 +15,14 @@ public final class OutputCleaner {
     private OutputCleaner() {
     }
 
+    /** Resolver's per-repository metadata directory (prefix lists, status files) at the repo root. */
+    static final String META_DIR = ".meta";
+
+    static boolean isInMetaDir(Path outDir, Path file) {
+        Path rel = outDir.relativize(file);
+        return rel.getNameCount() > 1 && rel.getName(0).toString().equals(META_DIR);
+    }
+
     /** True for files that must not remain in the output. */
     public static boolean isRemovable(String fileName) {
         return fileName.equals("_remote.repositories")
@@ -37,11 +45,19 @@ public final class OutputCleaner {
         List<Path> removable;
         try (Stream<Path> files = Files.walk(outDir)) {
             removable = files.filter(Files::isRegularFile)
-                    .filter(p -> isRemovable(p.getFileName().toString()))
+                    .filter(p -> isRemovable(p.getFileName().toString()) || isInMetaDir(outDir, p))
                     .toList();
         }
         for (Path p : removable) {
             Files.deleteIfExists(p);
+        }
+        Path meta = outDir.resolve(META_DIR);
+        if (Files.isDirectory(meta)) {
+            try (Stream<Path> s = Files.walk(meta)) {
+                for (Path d : s.sorted(java.util.Comparator.reverseOrder()).toList()) {
+                    Files.deleteIfExists(d);
+                }
+            }
         }
         return removable;
     }

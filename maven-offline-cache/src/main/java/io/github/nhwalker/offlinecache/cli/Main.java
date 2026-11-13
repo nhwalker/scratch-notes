@@ -95,6 +95,10 @@ public final class Main implements Callable<Integer> {
     }
 
     public static void main(String[] args) {
+        // Maven Resolver logs through slf4j-simple; keep it to warnings unless the user overrides it.
+        if (System.getProperty("org.slf4j.simpleLogger.defaultLogLevel") == null) {
+            System.setProperty("org.slf4j.simpleLogger.defaultLogLevel", "warn");
+        }
         System.exit(new CommandLine(new Main()).execute(args));
     }
 }

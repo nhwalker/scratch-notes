@@ -87,6 +87,34 @@ public final class Checksums {
         return (space < 0 ? content : content.substring(0, space)).toLowerCase();
     }
 
+    /** True for checksum / signature sidecar files, which get no sidecars of their own. */
+    public static boolean isSidecar(Path file) {
+        String name = file.getFileName().toString();
+        return ORDER.stream().anyMatch(ext -> name.endsWith("." + ext)) || name.endsWith(".asc");
+    }
+
+    /**
+     * Writes missing sidecars for every non-sidecar file under {@code dir}.
+     *
+     * @return number of files that got at least one generated sidecar
+     */
+    public static int writeMissingForTree(Path dir) throws IOException {
+        if (!Files.isDirectory(dir)) {
+            return 0;
+        }
+        List<Path> files;
+        try (java.util.stream.Stream<Path> s = Files.walk(dir)) {
+            files = s.filter(Files::isRegularFile).filter(p -> !isSidecar(p)).toList();
+        }
+        int count = 0;
+        for (Path f : files) {
+            if (!writeMissing(f).isEmpty()) {
+                count++;
+            }
+        }
+        return count;
+    }
+
     public static Path sidecar(Path file, String ext) {
         return file.resolveSibling(file.getFileName() + "." + ext);
     }

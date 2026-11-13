@@ -1,6 +1,6 @@
 # maven-offline-cache — Design
 
-> Status: design agreed, not yet implemented.
+> Status: v1 implemented in `maven-offline-cache/`; see §12 for what implementation and testing established.
 
 ## BLUF
 
@@ -216,7 +216,7 @@ absences are not.**
 - Hint matched and *some* classifiers were missing.
 - No `.module` file.
 - No main artifact for `packaging = pom` (e.g. protoc, BOMs).
-- Checksum missing upstream → generated.
+- (Planned: "checksum missing upstream". Not detectable — see §12; sidecars are generated, summarised as `checksums-generated`.)
 - File already present with matching checksum → skipped.
 
 ### Exit behaviour
@@ -284,14 +284,61 @@ Offline consumers:
 - Gradle's catalog parser validates top-level tables and library/plugin/version keys,
   but not the contents of `[metadata]` (other than `format.version`).
 
+**Verified by implementation and tests (2026-11):**
+
+- `readArtifactDescriptor` saves parent POMs and imported BOMs into the output directory
+  (unit test against a fake repository; real run: `org.openjfx:javafx:21` parent present).
+- Gradle 9.9.1 accepts a catalog containing `[metadata.offline-cache]` (offline acceptance build).
+
 **Unverified / risks:**
 
-- `readArtifactDescriptor` storing parent POMs/BOMs in the local repo (expected; confirm in tests).
-- Maven Resolver writing `.sha1` files alongside downloads (generated anyway).
-- Gradle falling back to POM when `.module` is absent (not relied on: `.module` is always fetched).
 - Completeness of the platform-constraint rule (§5.3).
 - A future Gradle version validating `[metadata]` (guarded by acceptance test).
 - Nexus "not found" caching behaviour for probe misses (depends on Nexus configuration).
+- Resolver config keys for threads/retries (`aether.connector.basic.threads`,
+  `aether.transport.http.retryHandler.count`): Resolver ignores unknown keys, so a wrong name
+  would silently use Resolver's default.
+
+## 12. Implementation findings (v1)
+
+**Behaviour added or changed during implementation**
+
+- **Proxy:** Resolver ignores JVM proxy settings by default; the tool sets Resolver's
+  `JreProxySelector`, so standard `-Dhttps.proxyHost` / `-Dhttps.proxyPort` / `-Dhttp.nonProxyHosts`
+  apply.
+- **Repository prefix filter disabled:** Resolver 2.x downloads `.meta/prefixes.txt` and silently
+  filters requests by it. Behind a Nexus *group* repository, Central's list could hide other
+  members' artifacts, so the filter (and the groupId filter) is off; `.meta/` is removed by cleanup.
+- **Gradle-variant javadoc** (e.g. `-gradle71-javadoc.jar`) is excluded like plain javadoc.
+- **Missing upstream checksums cannot be detected:** with the `warn` checksum policy, Resolver
+  accepts a file that has no upstream checksum without firing any event (verified). Mismatches
+  are still detected and reported once per file (Resolver retries a corrupted download once).
+- **JVM variant filter for `.module`:** variants with a Kotlin platform other than `jvm`/`common`,
+  or `org.gradle.jvm.environment = android`, are skipped (reported as info).
+
+**Limits found in acceptance testing**
+
+- **Build-time plugin dependencies:** the Kotlin Gradle plugin resolves
+  `org.jetbrains.kotlin:kotlin-build-tools-impl` when compiling; no POM/`.module` declares it, so no
+  metadata-based tool can find it. Fix: list such artifacts in a catalog (a second "extras" catalog
+  works, since catalogs are merged). With that one addition the Gradle 9.9.1 `--offline` build of
+  a Kotlin project passed.
+- **POM-declared classifiers are all fetched:** e.g. netty-tcnative's POM depends on its aarch64
+  jars too, so they are included even though hints target x86_64 (they are required by consumers).
+- **Superset size:** keeping every requested version and all JVM `.module` variants pulls in extras
+  (e.g. `kotlin-test`'s TestNG/JUnit variants). The sample catalog produced 337 files / 340 MB.
+
+**Acceptance results (sample catalog + extras catalog)**
+
+| Consumer | Setup | Result |
+|---|---|---|
+| Gradle 9.9.1 | `--offline`, fresh Gradle home, only `file://out` as repository, Kotlin plugin + libraries, `build` | passed |
+| Maven 3.9.11 | `central` mirrored to `file://out`, fresh local repo, `dependency:resolve` (Maven's own plugins from a separate online repository) | passed, 36 artifacts |
+
+**Environment note:** during testing, Maven Central intermittently returned HTTP 404 (and 429) for
+files that exist. Such runs report errors; re-running is incremental (only missing files are
+retried) and converged to 0 errors on the third run. Through a Nexus proxy this should not occur,
+but a re-run is the remedy if it does.
 
 ## In summary
 

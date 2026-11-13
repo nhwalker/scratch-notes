@@ -1,0 +1,31 @@
+# Sample catalog used by tests. Mirrors the libraries discussed in the design doc.
+
+[metadata]
+format.version = "1.1"
+
+[metadata.offline-cache]
+include-sources = true
+
+[metadata.offline-cache.hints]
+"org.openjfx:javafx-*"         = { classifiers = ["linux", "win", "mac"] }
+"com.google.protobuf:protoc"   = { classifiers = ["linux-x86_64", "windows-x86_64", "osx-x86_64"], extension = "exe" }
+protoc-gen-grpc-java           = { classifiers = ["linux-x86_64", "windows-x86_64", "osx-x86_64"], extension = "exe" }
+
+[versions]
+javafx = "21"
+protobuf = "3.25.1"
+grpc = "1.62.2"
+kotlin = "2.0.0"
+
+[libraries]
+javafx-controls = { module = "org.openjfx:javafx-controls", version.ref = "javafx" }
+protobuf-java = { group = "com.google.protobuf", name = "protobuf-java", version.ref = "protobuf" }
+protoc = { module = "com.google.protobuf:protoc", version.ref = "protobuf" }
+protoc-gen-grpc-java = { module = "io.grpc:protoc-gen-grpc-java", version.ref = "grpc" }
+netty-tcnative = "io.netty:netty-tcnative-boringssl-static:2.0.65.Final"
+
+[bundles]
+proto = ["protobuf-java", "protoc"]
+
+[plugins]
+kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }

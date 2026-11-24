@@ -1,0 +1,15 @@
+[
+  {
+    "match": {"title": "Status Board"},
+    "geometry": [0, 0, 1280, 720],
+    "lock": true
+  },
+  {
+    "match": {"class": "XTerm", "title": "log: *"},
+    "geometry": [0, 720, 640, 280]
+  },
+  {
+    "match": {"instance": "scratch*"},
+    "visible": false
+  }
+]

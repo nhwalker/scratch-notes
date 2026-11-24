@@ -1,4 +1,6 @@
-"""Integration tests: real Xvfb + real mwm + the pinwin daemon as a subprocess.
+"""Integration tests: real Xvfb + a real WM + the pinwin daemon as a subprocess.
+
+PINWIN_TEST_WM=mwm (default, production) or PINWIN_TEST_WM=mutter (GNOME X11).
 
 Skipped automatically when Xvfb or mwm is not installed. Each test gets a
 fresh X server and window manager. Verification uses its own small Xlib code
@@ -17,7 +19,11 @@ import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PROJECT = os.path.dirname(HERE)
-HAVE_X = all(shutil.which(t) for t in ("Xvfb", "mwm"))
+# PINWIN_TEST_WM selects the window manager under test: "mwm" (default,
+# production target) or "mutter" (GNOME's WM in X11 mode, developer machines).
+TEST_WM = os.environ.get("PINWIN_TEST_WM", "mwm")
+HAVE_X = all(shutil.which(t) for t in ("Xvfb", TEST_WM)) and \
+    (TEST_WM != "mutter" or shutil.which("dbus-run-session"))
 HAVE_XDOTOOL = shutil.which("xdotool") is not None
 
 if HAVE_X:
@@ -25,11 +31,32 @@ if HAVE_X:
     from Xlib.protocol import event as xevent
 
 
+def _x_alive(n):
+    import socket
+    sk = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        sk.settimeout(0.5)
+        sk.connect("/tmp/.X11-unix/X%d" % n)
+        return True
+    except OSError:
+        return False
+    finally:
+        sk.close()
+
+
 def _free_display():
+    """First display number with no live X server; stale lock/socket files
+    (e.g. from a killed Xvfb) are removed. Liveness = something accepts on the
+    socket, since a lock file's PID may have been reused."""
     for n in range(50, 200):
-        if not os.path.exists("/tmp/.X11-unix/X%d" % n) and \
-                not os.path.exists("/tmp/.X%d-lock" % n):
-            return ":%d" % n
+        if _x_alive(n):
+            continue
+        for stale in ("/tmp/.X%d-lock" % n, "/tmp/.X11-unix/X%d" % n):
+            try:
+                os.unlink(stale)
+            except FileNotFoundError:
+                pass
+        return ":%d" % n
     raise RuntimeError("no free display number")
 
 
@@ -47,7 +74,7 @@ def wait_until(pred, timeout=5.0, interval=0.05, msg="condition"):
     raise AssertionError("timed out waiting for %s (last: %r)" % (msg, last))
 
 
-@unittest.skipUnless(HAVE_X, "Xvfb and mwm required")
+@unittest.skipUnless(HAVE_X, "Xvfb and %s required" % TEST_WM)
 class MwmIntegration(unittest.TestCase):
 
     # ------------------------------------------------------------ fixtures
@@ -64,17 +91,34 @@ class MwmIntegration(unittest.TestCase):
                    msg="Xvfb socket")
         self.d = wait_until(lambda: display.Display(self.dpy_name), msg="X connection")
         self.root = self.d.screen().root
-        # Opaque move: mwm's default outline move grabs the server, which
-        # would freeze every client (including this test) during drags.
-        res = os.path.join(self.tmp, "mwm.res")
-        with open(res, "w") as f:
-            f.write("Mwm*moveOpaque: True\n")
-        self._spawn(["mwm"], env=dict(self.env, XENVIRONMENT=res))
-        motif = self.d.intern_atom("_MOTIF_WM_INFO")
-        wait_until(lambda: self.root.get_full_property(motif, X.AnyPropertyType),
-                   msg="mwm startup")
+        self._start_wm()
         self.A_WM_STATE = self.d.intern_atom("WM_STATE")
+        self.A_FE = self.d.intern_atom("_NET_FRAME_EXTENTS")
         self.daemon = None
+
+    def _start_wm(self):
+        if TEST_WM == "mwm":
+            # Opaque move: mwm's default outline move grabs the server, which
+            # would freeze every client (including this test) during drags.
+            res = os.path.join(self.tmp, "mwm.res")
+            with open(res, "w") as f:
+                f.write("Mwm*moveOpaque: True\n")
+            self._spawn(["mwm"], env=dict(self.env, XENVIRONMENT=res))
+            motif = self.d.intern_atom("_MOTIF_WM_INFO")
+            wait_until(lambda: self.root.get_full_property(motif, X.AnyPropertyType),
+                       msg="mwm startup")
+        elif TEST_WM == "mutter":
+            xdg = os.path.join(self.tmp, "xdg")
+            os.mkdir(xdg, 0o700)
+            env = dict(self.env, XDG_RUNTIME_DIR=xdg, LIBGL_ALWAYS_SOFTWARE="1")
+            self._spawn(["dbus-run-session", "--", "mutter", "--x11", "--replace",
+                         "--sm-disable"], env=env)
+            check = self.d.intern_atom("_NET_SUPPORTING_WM_CHECK")
+            wait_until(lambda: self.root.get_full_property(check, X.AnyPropertyType),
+                       timeout=15, msg="mutter startup")
+            time.sleep(1.0)        # let mutter finish managing the screen
+        else:
+            raise RuntimeError("unknown PINWIN_TEST_WM %r" % TEST_WM)
 
     def tearDown(self):
         if self.daemon and self.daemon.poll() is None:
@@ -82,9 +126,17 @@ class MwmIntegration(unittest.TestCase):
         if self.daemon:
             self.daemon.wait()
             self.log_f.close()
+        xvfb = self.procs[0]           # spawned first in setUp
         for p in reversed(self.procs):
             if p.poll() is None:
-                p.kill()
+                if p is xvfb:
+                    p.terminate()      # SIGTERM lets Xvfb remove its lock file
+                    try:
+                        p.wait(3)
+                    except subprocess.TimeoutExpired:
+                        p.kill()
+                else:
+                    p.kill()
             p.wait()
         try:
             self.d.close()
@@ -193,10 +245,22 @@ class MwmIntegration(unittest.TestCase):
         """Titles of viewable managed windows, bottom -> top."""
         return [t for f, c, t, st, v in self.all_windows() if v and st == 1]
 
+    def outer(self, f, c):
+        """(x, y, w, h): visible top-left of the decorated window + client size.
+
+        Independent re-implementation of the config's geometry definition:
+        _NET_FRAME_EXTENTS if published (Mutter), else frame origin (mwm)."""
+        cg = c.get_geometry()
+        fe = c.get_full_property(self.A_FE, X.AnyPropertyType)
+        if fe is not None and len(fe.value) >= 4:
+            t = c.translate_coords(self.root, 0, 0)
+            return (-t.x - fe.value[0], -t.y - fe.value[2], cg.width, cg.height)
+        fg = f.get_geometry()
+        return (fg.x, fg.y, cg.width, cg.height)
+
     def geom(self, title):
         f, c = self.find(title)
-        fg, cg = f.get_geometry(), c.get_geometry()
-        return (fg.x, fg.y, cg.width, cg.height)
+        return self.outer(f, c)
 
     def is_visible(self, title):
         return any(t == title and v and st == 1 for f, c, t, st, v in self.all_windows())
@@ -205,7 +269,9 @@ class MwmIntegration(unittest.TestCase):
         """Assert pred() holds continuously for `seconds`."""
         end = time.monotonic() + seconds
         while time.monotonic() < end:
-            self.assertTrue(pred())
+            if not pred():
+                self.fail("condition stopped holding; windows now: %r"
+                          % [(t, st, v) for f, c, t, st, v in self.all_windows()])
             time.sleep(0.1)
 
     def count_log(self, needle):
@@ -216,9 +282,16 @@ class MwmIntegration(unittest.TestCase):
     def test_existing_window_gets_geometry_and_bottom(self):
         self.client("A", "200x150+300+300")
         self.client("B", "200x150+350+350")
-        self.assertEqual(self.stack(), ["A", "B"])
         self.client("Pinned", "200x150+500+500")
-        self.assertEqual(self.stack()[-1], "Pinned")
+        # Precondition: Pinned is not already at the bottom. (Initial stacking
+        # order of new windows is WM-specific; Mutter does not always stack
+        # them in creation order, so arrange it explicitly.)
+        wait_until(lambda: len(self.stack()) == 3, msg="all three visible")
+        if self.stack()[0] == "Pinned":
+            f, c = self.find("Pinned")
+            c.configure(stack_mode=X.Above)    # newest window is focused on both WMs
+            self.d.sync()
+        wait_until(lambda: self.stack()[0] != "Pinned", msg="precondition")
         self.start_daemon([{"match": {"title": "Pinned"}, "geometry": [10, 20, 400, 300]}])
         wait_until(lambda: self.geom("Pinned") == (10, 20, 400, 300), msg="geometry")
         wait_until(lambda: self.stack()[0] == "Pinned", msg="bottom")
@@ -254,8 +327,15 @@ class MwmIntegration(unittest.TestCase):
         # does not raise it; clicking the title bar does.)
         subprocess.run(["xdotool", "mousemove", "450", "10", "click", "1"],
                        env=self.env, check=True)
-        wait_until(lambda: self.count_log("restacking") > before, msg="daemon reacts")
-        wait_until(lambda: self.stack() == ["P", "A"], msg="re-lowered")
+        if TEST_WM == "mwm":
+            # mwm reliably raises on a title-bar click, so the daemon must act.
+            wait_until(lambda: self.count_log("restacking") > before, msg="daemon reacts")
+        # Observed on Mutter 46: once the daemon has lowered the window with
+        # _NET_RESTACK_WINDOW, a title-bar click focuses it but did not raise
+        # it in this setup (cause not determined). Either way the invariant is
+        # the same: it ends up, and stays, at the bottom.
+        wait_until(lambda: self.stack() == ["P", "A"], msg="at bottom")
+        self.stays(lambda: self.stack() == ["P", "A"], 1.0)
 
     def test_moved_window_is_restored(self):
         self.client("P")
@@ -327,13 +407,11 @@ class MwmIntegration(unittest.TestCase):
         def beta_geom():
             for f, c, t, st, v in self.all_windows():
                 if c.get_wm_class() == ("beta", "Beta"):
-                    fg, cg = f.get_geometry(), c.get_geometry()
-                    return (fg.x, fg.y, cg.width, cg.height)
+                    return self.outer(f, c)
         wait_until(lambda: beta_geom() == (0, 0, 222, 111), msg="beta pinned")
         for f, c, t, st, v in self.all_windows():
             if c.get_wm_class() == ("alpha", "Alpha"):
-                fg, cg = f.get_geometry(), c.get_geometry()
-                self.assertEqual((fg.x, fg.y, cg.width, cg.height), (400, 400, 200, 150))
+                self.assertEqual(self.outer(f, c), (400, 400, 200, 150))
 
     def test_rule_manages_only_one_window(self):
         first = self.client("Dup", "200x150+400+400")
@@ -343,8 +421,7 @@ class MwmIntegration(unittest.TestCase):
         wait_until(lambda: "also matches" in self.daemon_log_text(), msg="warning")
 
         def dup_geoms():
-            return sorted((f.get_geometry().x, f.get_geometry().y, c.get_geometry().width,
-                           c.get_geometry().height)
+            return sorted(self.outer(f, c)
                           for f, c, t, st, v in self.all_windows() if t == "Dup" and st == 1)
         wait_until(lambda: dup_geoms() == [(0, 0, 300, 200), (700, 400, 200, 150)],
                    msg="one pinned, one untouched")

@@ -90,6 +90,11 @@ class Pinner:
         self.A_NET_WM_NAME = a("_NET_WM_NAME")
         self.A_UTF8 = a("UTF8_STRING")
         self.A_MOTIF_HINTS = a("_MOTIF_WM_HINTS")
+        self.A_FRAME_EXTENTS = a("_NET_FRAME_EXTENTS")
+        self.A_NET_SUPPORTED = a("_NET_SUPPORTED")
+        self.A_RESTACK = a("_NET_RESTACK_WINDOW")
+        self.A_ACTIVE = a("_NET_ACTIVE_WINDOW")
+        self.net_supported = set()   # EWMH atoms the running WM advertises
 
         self.watched = set()       # client wids we selected PropertyChange on
         self.hidden = {}           # wid -> Window we withdrew because visible=false
@@ -159,6 +164,22 @@ class Pinner:
                 return c, st
         return None, None
 
+    def _outer_origin(self, c):
+        """Root position of the window's VISIBLE top-left (decoration included).
+
+        * WM publishes _NET_FRAME_EXTENTS (EWMH, e.g. Mutter): client position
+          minus the left/top extents. Needed because Mutter's frame window also
+          contains invisible resize margins, so its origin is not visible.
+        * Otherwise (mwm): the frame window's origin; mwm's whole frame is visible.
+        Both equal the x, y given in a configure request (measured).
+        """
+        fe = c.win.get_full_property(self.A_FRAME_EXTENTS, X.AnyPropertyType)
+        if fe is not None and fe.format == 32 and len(fe.value) >= 4:
+            t = c.win.translate_coords(self.root, 0, 0)
+            return -t.x - int(fe.value[0]), -t.y - int(fe.value[2])
+        fg = c.frame.get_geometry()
+        return fg.x, fg.y
+
     def _withdraw(self, win):
         """Equivalent of Xlib's XWithdrawWindow (ICCCM 4.1.4)."""
         win.unmap()
@@ -217,8 +238,41 @@ class Pinner:
 
     # ------------------------------------------------------------------ reconcile
 
+    def _read_net_supported(self):
+        """Re-read each pass so a WM restart/replacement is picked up.
+        mwm advertises nothing, so every EWMH branch below is skipped there."""
+        p = self.root.get_full_property(self.A_NET_SUPPORTED, X.AnyPropertyType)
+        new = set(int(v) for v in p.value) if p is not None and p.format == 32 else set()
+        if new != self.net_supported:
+            log.info("WM EWMH support: restack=%s active_window=%s",
+                     self.A_RESTACK in new, self.A_ACTIVE in new)
+        self.net_supported = new
+
+    def _ewmh_message(self, win, atom, data):
+        ev = xevent.ClientMessage(window=win, client_type=atom, data=(32, data))
+        self.root.send_event(ev, event_mask=X.SubstructureRedirectMask
+                             | X.SubstructureNotifyMask)
+
+    def _lower(self, win):
+        if self.A_RESTACK in self.net_supported:
+            # Measured on Mutter 46: a plain ConfigureRequest(Below) is honoured
+            # only for the focused window. _NET_RESTACK_WINDOW (source 2 =
+            # pager/tool) works for any window.
+            self._ewmh_message(win, self.A_RESTACK, [2, X.NONE, X.Below, 0, 0])
+        else:
+            win.configure(stack_mode=X.Below)   # ICCCM; what mwm needs
+
+    def _deiconify(self, win):
+        win.map()                               # ICCCM: Iconic -> Normal (mwm)
+        if self.A_ACTIVE in self.net_supported:
+            # Measured on Mutter 46: XMapWindow does not un-minimize; this does.
+            # Side effect: the window is activated (focused, raised), and the
+            # next pass lowers it again.
+            self._ewmh_message(win, self.A_ACTIVE, [2, X.CurrentTime, 0, 0, 0])
+
     def reconcile(self):
         now = time.monotonic()
+        self._read_net_supported()
         clients, stack = self.scan()
         live = {c.wid for c in clients}
 
@@ -340,7 +394,7 @@ class Pinner:
         if c.state == ICONIC:
             if self._may_act(c.wid, "deiconify"):
                 log.info("deiconifying 0x%x %r", c.wid, c.title)
-                c.win.map()
+                self._deiconify(c.win)
             return True
 
         if r.lock and self._needs_lock(c.win):
@@ -390,7 +444,7 @@ class Pinner:
         """
         fg = c.frame.get_geometry()
         cg = c.win.get_geometry()
-        actual = (fg.x, fg.y, cg.width, cg.height)
+        actual = self._outer_origin(c) + (cg.width, cg.height)
         if actual == desired:
             self.geom_state.pop(c.wid, None)
             return
@@ -467,7 +521,7 @@ class Pinner:
         # Lower in reverse order so the first rule ends up lowest.
         for c in reversed(acting):
             try:
-                c.win.configure(stack_mode=X.Below)
+                self._lower(c.win)
             except IGNORED_ERRORS:
                 pass
 
@@ -477,13 +531,12 @@ class Pinner:
         clients, _ = self.scan()
         rows = []
         for c in clients:
-            fg = c.frame.get_geometry()
             cg = c.win.get_geometry()
             r = first_match(self.rules, c.title, c.instance, c.wm_class) if self.rules else None
             rows.append({
                 "id": "0x%x" % c.wid, "title": c.title, "instance": c.instance,
                 "class": c.wm_class, "state": {NORMAL: "normal", ICONIC: "iconic"}[c.state],
-                "geometry": [fg.x, fg.y, cg.width, cg.height],
+                "geometry": list(self._outer_origin(c)) + [cg.width, cg.height],
                 "rule": r.index if r else None,
             })
         return rows

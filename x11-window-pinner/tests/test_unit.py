@@ -82,5 +82,46 @@ class ConfigTests(unittest.TestCase):
         self.ok([{"match": {"title": "x"}, "geometry": [-10, -20, 1, 1]}])
 
 
+class ClaimTests(unittest.TestCase):
+    """Pinner._update_claims: one window per rule, sticky claims."""
+
+    def make(self):
+        from pinwin.daemon import Pinner
+        p = Pinner.__new__(Pinner)      # no X connection needed for this logic
+        p.claims, p.warned_extra = {}, set()
+        p.rules = parse_rules([{"match": {"title": "A*"}, "geometry": [0, 0, 1, 1]},
+                               {"match": {"title": "B*"}, "geometry": [0, 0, 1, 1]}])
+        return p
+
+    def test_first_candidate_claimed_extras_warned_once(self):
+        p = self.make()
+        with self.assertLogs("pinwin", "WARNING") as cm:
+            p._update_claims({0: [10, 11], 1: [20]})
+            p._update_claims({0: [10, 11], 1: [20]})
+        self.assertEqual(p.claims, {0: 10, 1: 20})
+        self.assertEqual(len([m for m in cm.output if "0xb" in m]), 1)
+
+    def test_claim_is_sticky_regardless_of_order(self):
+        p = self.make()
+        p._update_claims({0: [10, 11]})
+        p._update_claims({0: [11, 10]})       # stacking order changed
+        self.assertEqual(p.claims[0], 10)
+
+    def test_release_when_window_gone_or_unmatched(self):
+        p = self.make()
+        p._update_claims({0: [10, 11]})
+        p._update_claims({0: [11]})           # 10 closed / title changed
+        self.assertEqual(p.claims[0], 11)
+        p._update_claims({})
+        self.assertEqual(p.claims, {})
+
+    def test_extra_warned_again_after_it_reappears(self):
+        p = self.make()
+        p._update_claims({0: [10, 11]})
+        p._update_claims({0: [10]})
+        with self.assertLogs("pinwin", "WARNING"):
+            p._update_claims({0: [10, 11]})
+
+
 if __name__ == "__main__":
     unittest.main()

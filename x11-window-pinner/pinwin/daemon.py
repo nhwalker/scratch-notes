@@ -98,6 +98,8 @@ class Pinner:
         self.fights = defaultdict(deque)   # wid -> timestamps of corrections
         self.backoff = {}          # wid -> time until which we leave it alone
         self.seen_configure = set()  # frame ids with a ConfigureNotify since our request
+        self.claims = {}           # rule index -> the one wid that rule manages
+        self.warned_extra = set()  # (rule index, wid) extras already warned about
 
         self._reload_requested = False
         self._stop_requested = False
@@ -244,25 +246,50 @@ class Pinner:
                 win.map()
                 del self.pending_remap[wid]
 
-        # Hidden windows: drop dead ones; re-show any no longer matched as hidden.
-        for wid, win in list(self.hidden.items()):
+        # Candidates per rule, in claim-preference order: managed clients
+        # bottom -> top, then windows we have withdrawn ourselves.
+        candidates = defaultdict(list)     # rule index -> [wid]
+        by_wid = {}                        # wid -> (rule, Client or None)
+        for c in clients:
+            r = first_match(self.rules, c.title, c.instance, c.wm_class)
+            by_wid[c.wid] = (r, c)
+            if r is not None:
+                candidates[r.index].append(c.wid)
+        for wid, win in list(self.hidden.items()) + \
+                [(w, v[0]) for w, v in self.pending_remap.items()]:
+            if wid in live:
+                continue
             try:
-                if wid in live:
-                    continue          # app remapped it; handled below as a client
                 inst, cls = self._wm_class(win)
                 r = first_match(self.rules, self._title(win), inst, cls)
             except IGNORED_ERRORS:
-                del self.hidden[wid]
+                self.hidden.pop(wid, None)
                 continue
-            if r is None or r.visible:
+            by_wid[wid] = (r, None)
+            if r is not None:
+                candidates[r.index].append(wid)
+
+        self._update_claims(candidates)
+        claimed = set(self.claims.values())
+
+        # Withdrawn-by-us windows that are no longer claimed by a hiding rule
+        # (rule changed, title changed, or another window holds the claim).
+        for wid, win in list(self.hidden.items()):
+            if wid in live:
+                continue          # app remapped it; handled below as a client
+            r, _ = by_wid.get(wid, (None, None))
+            if wid not in claimed or r is None or r.visible:
                 log.info("window 0x%x: no longer hidden by config, showing", wid)
-                win.map()
+                try:
+                    win.map()
+                except IGNORED_ERRORS:
+                    pass
                 del self.hidden[wid]
 
         pinned = []   # (rule, client) for visible managed windows
         for c in clients:
-            r = first_match(self.rules, c.title, c.instance, c.wm_class)
-            if r is None or c.wid in self.pending_remap:
+            r, _ = by_wid[c.wid]
+            if r is None or c.wid not in claimed or c.wid in self.pending_remap:
                 continue
             try:
                 if self._enforce(c, r):
@@ -273,6 +300,32 @@ class Pinner:
         frames = {c.frame.id for c in clients if c.state == NORMAL}
         self._enforce_stacking(pinned, [w for w in stack if w in frames])
         self.d.sync()
+
+    def _update_claims(self, candidates):
+        """Each rule manages at most one window.
+
+        A claim is sticky: the rule keeps its window for as long as that window
+        exists and still matches the rule (first-match). Otherwise the rule
+        claims its first candidate (bottom-most managed window, else one we
+        withdrew). Extra matches are left alone and warned about once.
+        """
+        for idx in list(self.claims):
+            if self.claims[idx] not in candidates.get(idx, ()):
+                log.info("rule %d: released window 0x%x", idx, self.claims[idx])
+                del self.claims[idx]
+        for idx, wids in candidates.items():
+            if idx not in self.claims:
+                self.claims[idx] = wids[0]
+                log.info("rule %d: claimed window 0x%x", idx, wids[0])
+            for wid in wids:
+                if wid != self.claims[idx] and (idx, wid) not in self.warned_extra:
+                    self.warned_extra.add((idx, wid))
+                    log.warning("rule %d %s also matches window 0x%x; ignoring it "
+                                "(rule already manages 0x%x)",
+                                idx, self.rules[idx].match, wid, self.claims[idx])
+        all_wids = {w for ws in candidates.values() for w in ws}
+        self.warned_extra = {(i, w) for i, w in self.warned_extra
+                             if w in all_wids and self.claims.get(i) != w}
 
     def _enforce(self, c, r):
         """Apply visibility, lock and geometry. Returns True if c stays visible."""

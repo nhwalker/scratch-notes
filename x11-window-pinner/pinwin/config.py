@@ -23,6 +23,7 @@ The file is a JSON list of rules:
 
 Matched windows are always kept at the bottom of the stacking order.
 If one window matches several rules, the first rule in the file wins.
+Each rule manages at most one window (see Pinner._update_claims).
 """
 
 import json

@@ -335,6 +335,37 @@ class MwmIntegration(unittest.TestCase):
                 fg, cg = f.get_geometry(), c.get_geometry()
                 self.assertEqual((fg.x, fg.y, cg.width, cg.height), (400, 400, 200, 150))
 
+    def test_rule_manages_only_one_window(self):
+        first = self.client("Dup", "200x150+400+400")
+        self.client("Dup", "200x150+700+400")
+        self.client("Free", "100x100+0+600")
+        self.start_daemon([{"match": {"title": "Dup"}, "geometry": [0, 0, 300, 200]}])
+        wait_until(lambda: "also matches" in self.daemon_log_text(), msg="warning")
+
+        def dup_geoms():
+            return sorted((f.get_geometry().x, f.get_geometry().y, c.get_geometry().width,
+                           c.get_geometry().height)
+                          for f, c, t, st, v in self.all_windows() if t == "Dup" and st == 1)
+        wait_until(lambda: dup_geoms() == [(0, 0, 300, 200), (700, 400, 200, 150)],
+                   msg="one pinned, one untouched")
+        wait_until(lambda: self.stack()[0] == "Dup", msg="pinned one at bottom")
+        self.stays(lambda: dup_geoms() == [(0, 0, 300, 200), (700, 400, 200, 150)], 1.0)
+        self.assertEqual(self.count_log("also matches"), 1, "warning should not repeat")
+        # Close the managed window -> the other one is claimed and pinned.
+        first.kill()
+        wait_until(lambda: dup_geoms() == [(0, 0, 300, 200)], msg="second claimed")
+
+    def test_hiding_rule_hides_only_one_window(self):
+        self.client("Dup", "200x150+400+400")
+        self.client("Dup", "200x150+700+400")
+        self.start_daemon([{"match": {"title": "Dup"}, "visible": False}])
+
+        def visible_dups():
+            return sum(1 for f, c, t, st, v in self.all_windows()
+                       if t == "Dup" and v and st == 1)
+        wait_until(lambda: visible_dups() == 1, msg="exactly one hidden")
+        self.stays(lambda: visible_dups() == 1, 1.5)   # claim must not flip
+
     def test_multiple_pinned_keep_rule_order(self):
         self.client("Free")
         self.client("Second", "100x100+600+0")

@@ -43,8 +43,14 @@ A JSON list of rules ([example](example-config.json)):
 
 Rules:
 
-* A rule applies to **every** window it matches.
-* A window matching several rules uses the **first** one in the file.
+* A rule manages **one** window. If it matches several, it claims the
+  bottom-most one (stacking order at the time) and logs a warning once for each
+  extra, which is left untouched. The claim is sticky: it holds, even while
+  the window is hidden, until that window closes or stops matching; then the
+  next matching window is claimed.
+* A window matching several rules uses the **first** one in the file. If that
+  rule has already claimed another window, this one is left alone (it does
+  not fall through to later rules).
 * All visible pinned windows sit below all other managed windows; among
   themselves, the earlier rule is lower.
 * Title is read from `_NET_WM_NAME` (UTF-8), falling back to `WM_NAME`.
